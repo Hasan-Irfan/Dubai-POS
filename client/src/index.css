@@ -1,0 +1,73 @@
+
+@tailwind base;
+    @tailwind components;
+    @tailwind utilities;
+
+    @layer base {
+      :root {
+        --background: 0 0% 100%; /* White */
+        --foreground: 222 47% 11%; /* Dark Slate Blue */
+        
+        --card: 0 0% 98%; /* Almost White */
+        --card-foreground: 222 47% 11%;
+        
+        --popover: 0 0% 100%;
+        --popover-foreground: 222 47% 11%;
+        
+        --primary: 262 80% 58%; /* Vibrant Purple */
+        --primary-foreground: 210 40% 98%; /* Almost White for contrast on primary */
+        
+        --secondary: 217 33% 90%; /* Light Muted Blue */
+        --secondary-foreground: 222 47% 11%;
+        
+        --muted: 217 33% 94%; /* Very Light Muted Blue */
+        --muted-foreground: 222 47% 40%; /* Darker Muted Blue for text */
+        
+        --accent: 300 80% 60%; /* Bright Pink/Magenta */
+        --accent-foreground: 210 40% 98%; /* Almost White for contrast on accent */
+        
+        --destructive: 0 72% 51%; /* Red */
+        --destructive-foreground: 210 40% 98%;
+        
+        --border: 217 33% 85%; /* Light Gray for borders */
+        --input: 217 33% 88%; /* Slightly darker gray for inputs */
+        --ring: 262 80% 58%; /* Vibrant Purple for focus rings */
+        
+        --radius: 0.75rem;
+      }
+
+      .dark {
+        --background: 222 47% 11%;
+        --foreground: 210 40% 98%;
+        --card: 222 47% 15%;
+        --card-foreground: 210 40% 98%;
+        --popover: 222 47% 11%;
+        --popover-foreground: 210 40% 98%;
+        --primary: 262 80% 58%;
+        --primary-foreground: 210 40% 98%;
+        --secondary: 217 33% 50%;
+        --secondary-foreground: 210 40% 98%;
+        --muted: 217 33% 25%;
+        --muted-foreground: 210 40% 60%;
+        --accent: 300 80% 60%;
+        --accent-foreground: 210 40% 98%;
+        --destructive: 0 72% 51%;
+        --destructive-foreground: 210 40% 98%;
+        --border: 217 33% 25%;
+        --input: 217 33% 25%;
+        --ring: 262 80% 58%;
+      }
+    }
+
+    @layer base {
+      * {
+        @apply border-border;
+      }
+      body {
+        @apply bg-background text-foreground;
+        font-feature-settings: "rlig" 1, "calt" 1;
+        transition-property: background-color, color;
+        transition-duration: 300ms;
+        transition-timing-function: ease-in-out;
+      }
+    }

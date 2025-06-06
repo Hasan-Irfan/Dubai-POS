@@ -43,37 +43,32 @@ import authRouter from './routes/authRoutes.js';
 import userRouter from './routes/userRoutes.js';
 import employeeRouter from './routes/employeeRoutes.js';
 import invoiceRouter from './routes/invoiceRoutes.js';
-import advanceRouter from './routes/advanceRoutes.js';
 import vendorRouter from './routes/vendorRoutes.js';
 import vendorTransactionRouter from './routes/vendorTransactionRoutes.js';
 import cashRouter from './routes/cashRoutes.js';
 import bankRouter from './routes/bankRoutes.js';
 import expenseRouter from './routes/expenseRoutes.js';
 import reportRouter from './routes/reportRoutes.js';
-import payrollRouter from './routes/payrollRoutes.js';
 import auditRouter from './routes/auditRoutes.js';
 import dashboardRoutes from './routes/dashboardRoutes.js';
+import salaryRouter from './routes/salaryRoutes.js';
 
 //routes declaration
 app.use('/api/v1', authRouter);
 
-
 // Authentication middleware - all routes below require authentication
-app.use(jwtVerify);               // Verifies JWT and sets req.user
-app.use(attachAuditContext);     // Adds req.auditContext (for audit plugin use)
+app.use(jwtVerify);
+app.use(attachAuditContext);
 
-app.use('/api/v1/users', userRouter);
 app.use('/api/v1/employees', employeeRouter);
 app.use('/api/v1/invoices', invoiceRouter);
 app.use('/api/v1/cash', cashRouter);     // Needed for invoice payment processing
 app.use('/api/v1/bank', bankRouter);     // Needed for invoice payment processing
-app.use('/api/v1/advances', advanceRouter);
 app.use('/api/v1/vendors', vendorRouter);
-app.use('/api/v1/vendor-transactions', vendorTransactionRouter);
 app.use('/api/v1/expenses', expenseRouter);
 app.use('/api/v1/reports', reportRouter);
-app.use('/api/v1/payroll', payrollRouter);
 app.use('/api/v1/audit', auditRouter);
+app.use('/api/v1/salary', salaryRouter);
 app.use('/api/dashboard', dashboardRoutes);
 
 app.use(notFound);

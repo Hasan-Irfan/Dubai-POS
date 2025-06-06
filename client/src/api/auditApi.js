@@ -2,7 +2,7 @@ import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 
 export const auditApi = createApi({
   reducerPath: 'auditApi',
-  baseQuery: fetchBaseQuery({ baseUrl: '/api/v1/audit', credentials: 'include' }),
+  baseQuery: fetchBaseQuery({ baseUrl: 'https://dubai-pos-backend.onrender.com/api/v1/audit', credentials: 'include' }),
   tagTypes: ['Audit'],
   endpoints: (builder) => ({
     getAuditLogs: builder.query({

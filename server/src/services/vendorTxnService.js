@@ -1,4 +1,3 @@
-
 // src/services/vendorTxnService.js
 import mongoose from 'mongoose';
 import VendorTransaction from '../models/vendorTransaction.model.js';
@@ -9,15 +8,15 @@ import * as bankService from './bankService.js';
 
 /**
  * Record a purchase or payment for a vendor.
- * Automatically calculates the running balance.
+ * For Purchase: Only records the transaction and updates balance
+ * For Payment: Records transaction, updates balance, and updates cash/bank registers
  *
  * @param {Object} params
  * @param {string} params.vendorId
  * @param {string} params.type         – "Purchase" or "Payment"
  * @param {string} params.description
  * @param {number} params.amount
- * @param {string} params.method
- * @param {string} params.account
+ * @param {string} params.method       – Required for Payment type only
  * @param {Object} auditContext        – { actor, ip, ua }
  */
 export async function addVendorTransaction(
@@ -30,6 +29,16 @@ export async function addVendorTransaction(
   }
   if (!['Purchase','Payment'].includes(type)) {
     throw new Error('Type must be "Purchase" or "Payment"');
+  }
+
+  // Validate method is provided for Payment type
+  if (type === 'Payment') {
+    if (!method) {
+      throw new Error('Payment method is required for Payment type');
+    }
+    if (!['Cash', 'Bank','Shabka'].includes(method)) {
+      throw new Error('Payment method must be either Cash or Bank or Shabka');
+    }
   }
 
   // Use existing session if provided, otherwise create one
@@ -62,7 +71,7 @@ export async function addVendorTransaction(
     const txn = new VendorTransaction({ 
       vendorId, 
       type,
-      method, 
+      method: type === 'Payment' ? method : undefined, // Only set method for Payment type
       description, 
       amount, 
       balance: newBalance 
@@ -80,30 +89,10 @@ export async function addVendorTransaction(
     // Save under the session so auditPlugin sees $locals.audit
     const saved = await txn.save({ session });
 
-    // Record an expense document for every Purchase
-    if (type === 'Purchase') {
-      const expData = {
-        date: txn.date,
-        category: 'Inventory',
-        description,
-        amount,
-        paidTo: vendorId,
-        paidToModel: 'Vendor'
-      };
-      if (method) {
-        expData.paymentType = method;
-      }
-      await expenseService.recordExpense(expData, { 
-        session, 
-        actor: auditContext.actor, 
-        ip: auditContext.ip, 
-        ua: auditContext.ua 
-      });
-    }
-
-    // Record ledger entry for Payment ONLY (not for Purchase since that's handled by expense service)
+    // For Payment type only: Record ledger entry and link it
     if (type === 'Payment') {
       const reference = `Vendor Payment - ${vendor.name}`;
+      
       if (method === 'Cash') {
         const cashEntry = await cashService.recordCashEntry(
           { date: txn.date, type: 'Outflow', reference, amount },
@@ -125,7 +114,7 @@ export async function addVendorTransaction(
             ua: auditContext.ua 
           }
         );
-      } else {
+      } else if (method === 'Bank') {
         const bankEntry = await bankService.recordBankTransaction(
           { date: txn.date, type: 'Outflow', method, reference, amount },
           { 
@@ -292,6 +281,9 @@ export async function updateVendorTransaction(id, { description }, auditContext)
 
 /**
  * Soft delete a vendor transaction and recalculate subsequent balances.
+ * For Purchase: Simply marks as deleted
+ * For Payment: Reverses the cash/bank entry and marks as deleted
+ * 
  * @param {string} id
  * @param {Object} auditContext  – { actor, ip, ua }
  */
@@ -310,8 +302,10 @@ export async function deleteVendorTransaction(id, auditContext) {
   }
 
   try {
-    // 1. Get the transaction to be deleted with its type (Purchase vs Payment)
-    const toDelete = await VendorTransaction.findById(id).session(session);
+    // 1. Get the transaction to be deleted
+    const toDelete = await VendorTransaction.findById(id)
+      .populate('vendorId', 'name')
+      .session(session);
     if (!toDelete) throw new Error('Transaction not found');
     if (toDelete.status === 'deleted') throw new Error('Transaction is already deleted');
 
@@ -329,23 +323,36 @@ export async function deleteVendorTransaction(id, auditContext) {
 
     await toDelete.save({ session });
 
-    // 3. For Purchase transactions, find and delete the associated expense
-    if (type === 'Purchase') {
-      // Look for an expense with this transaction as the linkedTo reference
-      const Expense = mongoose.model('Expense');
-      const associatedExpense = await Expense.findOne({
-        category: 'Inventory',
-        paidTo: vendorId,
-        paidToModel: 'Vendor',
-        // Match date and amount to find the right expense if there's no direct link
-        date: { $gte: new Date(toDelete.date.getTime() - 1000), $lte: new Date(toDelete.date.getTime() + 1000) },
-        amount: toDelete.amount
-      }).session(session);
-
-      if (associatedExpense) {
-        // Use the expense service to properly delete the expense and its ledger entries
-        await expenseService.deleteExpense(
-          associatedExpense._id,
+    // 3. For Payment transactions, reverse the cash/bank transaction
+    if (type === 'Payment' && toDelete.ledgerEntryId && toDelete.ledgerEntryModel) {
+      const reference = `Reversal of payment to ${toDelete.vendorId.name} (deleted transaction)`;
+      
+      if (toDelete.method === 'Cash') {
+        // Create an inflow to reverse the outflow
+        await cashService.recordCashEntry(
+          {
+            date: new Date(),
+            type: 'Inflow',
+            reference,
+            amount: toDelete.amount
+          },
+          {
+            session,
+            actor: auditContext.actor,
+            ip: auditContext.ip,
+            ua: auditContext.ua
+          }
+        );
+      } else if (toDelete.method === 'Bank' || toDelete.method === 'Shabka') {
+        // Create a bank inflow to reverse the outflow
+        await bankService.recordBankTransaction(
+          {
+            date: new Date(),
+            type: 'Inflow',
+            method: toDelete.method,
+            reference,
+            amount: toDelete.amount
+          },
           {
             session,
             actor: auditContext.actor,
@@ -354,54 +361,9 @@ export async function deleteVendorTransaction(id, auditContext) {
           }
         );
       }
-    } else {
-      // 4. For Payment transactions, reverse the cash/bank transaction in the ledger
-      if (toDelete.ledgerEntryId && toDelete.ledgerEntryModel) {
-        if (toDelete.ledgerEntryModel === 'CashRegister') {
-          // Create an inflow to reverse the outflow
-          await cashService.recordCashEntry(
-            {
-              date: new Date(),
-              type: 'Inflow', // Inflow because we're returning money that was paid out
-              reference: `Reversal of payment to vendor (deleted transaction)`,
-              amount: toDelete.amount
-            },
-            {
-              session,
-              actor: auditContext.actor,
-              ip: auditContext.ip,
-              ua: auditContext.ua
-            }
-          );
-
-          // Also delete the original cash entry
-          // await cashService.deleteCashEntry(
-          //   toDelete.ledgerEntryId,
-          //   {
-          //     session,
-          //     actor: auditContext.actor,
-          //     ip: auditContext.ip,
-          //     ua: auditContext.ua
-          //   }
-          // );
-        }
-        
-        // } else if (toDelete.ledgerEntryModel === 'BankTransaction') {
-        //   // For bank payments, use the bank service to handle the reversal
-        //   await bankService.deleteBankTransaction(
-        //     toDelete.ledgerEntryId,
-        //     {
-        //       session,
-        //       actor: auditContext.actor,
-        //       ip: auditContext.ip,
-        //       ua: auditContext.ua
-        //     }
-        //   );
-        // }
-      }
     }
 
-    // 5. Recalculate balances for all remaining active transactions for this vendor
+    // 4. Recalculate balances for all remaining active transactions for this vendor
     const txns = await VendorTransaction
       .find({ vendorId, status: 'active' })
       .sort({ date: 1 })

@@ -35,20 +35,6 @@ const SalesInvoiceSchema = new mongoose.Schema({
     totalProfit: Number
   },
 
-  commission: {
-    thresholdPct: Number,
-    ratePct:      Number,
-    eligible:     Boolean,
-    amount:       Number,
-    paid:         { type: Number, default: 0 },
-    balanceDue:   { type: Number, default: 0 }
-  },
-
-  advance: {
-    taken:     { type: Number, default: 0 },
-    lastTaken: Date
-  },
-
   payments: [{
     id:     { type: String, required: true },
     date:   Date,

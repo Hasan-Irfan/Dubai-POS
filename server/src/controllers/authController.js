@@ -328,36 +328,61 @@ export const updatePassword = asyncHandler(async (req, res) => {
   }
 
   try {
-    const decodedToken = jwt.verify(resetToken, process.env.RESET_TOKEN_SECRET);
-
-    if (!decodedToken) {
+    // Verify the token
+    let decodedToken;
+    try {
+      decodedToken = jwt.verify(resetToken, process.env.RESET_TOKEN_SECRET);
+    } catch (error) {
+      if (error.name === 'TokenExpiredError') {
+        return res.status(401).json({
+          success: false,
+          message: "Reset link has expired. Please request a new one.",
+        });
+      }
       return res.status(401).json({
         success: false,
-        message: "Link has expired. Please try again",
+        message: "Invalid reset link. Please request a new one.",
       });
     }
 
-    const user = await User.findById(decodedToken._id);
+    if (!decodedToken || !decodedToken._id) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid reset link. Please request a new one.",
+      });
+    }
 
+    // Find the user
+    const user = await User.findById(decodedToken._id);
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: "User not found",
+        message: "User not found. Please request a new reset link.",
       });
     }
 
+    // Validate password
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters long",
+      });
+    }
+
+    // Update password
     const hashedPassword = await bcrypt.hash(password, 10);
     user.password = hashedPassword;
     await user.save();
 
     return res.status(200).json({
       success: true,
-      message: "Password updated successfully",
+      message: "Password updated successfully. Please login with your new password.",
     });
   } catch (error) {
-    return res.status(400).json({
+    console.error('Password reset error:', error);
+    return res.status(500).json({
       success: false,
-      message: "Invalid or Expired Token",
+      message: "An error occurred while updating your password. Please try again.",
     });
   }
 });

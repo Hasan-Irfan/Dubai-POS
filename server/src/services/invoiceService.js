@@ -7,9 +7,6 @@ import * as expenseService from './expenseService.js';
 import CashRegister from '../models/cashRegister.model.js';
 import BankTransaction from '../models/bankTransaction.model.js';
 
-const COMM_THRESHOLD = parseFloat(process.env.COMMISSION_THRESHOLD_PCT) || 0;
-const COMM_RATE      = parseFloat(process.env.COMMISSION_RATE_PCT)   || 0;
-
 /**
  * Validates invoice data for creation and updates
  * @param {Object} data - Invoice data to validate
@@ -121,7 +118,7 @@ async function validateOpeningBalances(session) {
 }
 
 /**
- * Create a new sales invoice, computing totals, profit, and commission. 
+ * Create a new sales invoice, computing totals and profit.
  * @param {Object} data – {
  *   invoiceNumber,
  *   date,
@@ -171,20 +168,7 @@ export async function createInvoice(data, auditContext) {
       throw new Error('Invoice total amount must be greater than zero');
     }
 
-    // 3) Compute commission eligibility & amount
-    const profitMargin = totalCost > 0 ? (totalProfit / totalCost) * 100 : 0;
-    const eligible     = profitMargin >= COMM_THRESHOLD;
-    const amount       = eligible ? (totalProfit * COMM_RATE) / 100 : 0;
-    const commission = {
-      thresholdPct: COMM_THRESHOLD,
-      ratePct:      COMM_RATE,
-      eligible,
-      amount,
-      paid:       0,
-      balanceDue: amount
-    };
-
-    // 4) Build invoice
+    // 3) Build invoice
     const inv = new SalesInvoice({
       invoiceNumber: data.invoiceNumber,
       date:          data.date || new Date(),
@@ -194,13 +178,11 @@ export async function createInvoice(data, auditContext) {
       totals: {
         subTotal, totalVat, grandTotal, totalCost, totalProfit
       },
-      commission,
-      advance:  { taken: 0, lastTaken: null },
       payments: [],
       status:   data.status || 'Unpaid'
     });
 
-    // 5) Set audit metadata
+    // 4) Set audit metadata
     inv.$locals = inv.$locals || {};
     inv.$locals.audit = {
       actorId:    auditContext.actor.id,
@@ -209,10 +191,10 @@ export async function createInvoice(data, auditContext) {
       ua:         auditContext.ua
     };
 
-    // 6) Save invoice
+    // 5) Save invoice
     const saved = await inv.save({ session });
 
-    // 7) Handle any initial payments
+    // 6) Handle any initial payments
     if (data.payments && data.payments.length > 0) {
       let paidAmt = 0;
       
@@ -256,7 +238,6 @@ export async function createInvoice(data, auditContext) {
             }
           );
         } else {
-          
           await bankService.recordBankTransaction(
             {
               date: paymentDate,
@@ -276,23 +257,14 @@ export async function createInvoice(data, auditContext) {
         
         paidAmt += pay.amount;
       }
-
-      // Update invoice status based on payments
+      
+      // Update status based on payment amount
       if (paidAmt >= grandTotal) {
         saved.status = 'Paid';
       } else if (paidAmt > 0) {
         saved.status = 'Partially Paid';
       }
       
-      // Re-apply audit metadata for the update
-      saved.$locals = {
-        audit: {
-          actorId: auditContext.actor.id,
-          actorModel: auditContext.actor.model,
-          ip: auditContext.ip,
-          ua: auditContext.ua
-        }
-      };
       await saved.save({ session });
     }
 
@@ -445,7 +417,7 @@ export async function updateInvoice(id, data, auditContext) {
     });
   }
 
-  // Enforce immutable payment history - FR-INV-06
+  // Enforce immutable payment history
   if (data.payments) {
     throw new Error('Direct payment editing is not allowed. Use addPayment endpoint instead.');
   }
@@ -463,20 +435,17 @@ export async function updateInvoice(id, data, auditContext) {
     }
     
     const hasPaidStatus = invoiceCheck.status === 'Paid' || invoiceCheck.status === 'Partially Paid';
-    const hasCommissionPaid = invoiceCheck.commission && invoiceCheck.commission.paid > 0;
     
-    if (hasPaidStatus || hasCommissionPaid) {
-      throw new Error('This invoice cannot be updated because it has payments and/or commission recorded. Please delete this invoice and create a new one instead.');
+    if (hasPaidStatus) {
+      throw new Error('This invoice cannot be updated because it has payments recorded. Please delete this invoice and create a new one instead.');
     }
     
-    // Enforce status integrity - FR-INV-07
+    // Enforce status integrity
     if (data.status) {
-      throw new Error('Status cannot be updated directly; it is derived from payments and commission logic.');
+      throw new Error('Status cannot be updated directly; it is derived from payments.');
     }
     
     // STEP 2: Now get a fresh copy of the document to modify
-    // We'll use findById without a session and save with standard document methods
-    // to work with the audit plugin as expected
     const current = await SalesInvoice.findById(id);
     
     // Basic fields
@@ -510,19 +479,6 @@ export async function updateInvoice(id, data, auditContext) {
         throw new Error(`New invoice total (${grandTotal}) is less than the amount already paid (${currentPaidAmt})`);
       }
       
-      // Calculate commission
-      const profitMargin = totalCost > 0 ? (totalProfit / totalCost) * 100 : 0;
-      const eligible = profitMargin >= COMM_THRESHOLD;
-      const amount = eligible ? (totalProfit * COMM_RATE) / 100 : 0;
-      
-      // Check if advance exceeds new commission
-      if (current.advance && current.advance.taken > amount) {
-        throw new Error(`Advance taken (${current.advance.taken}) exceeds the new commission amount (${amount})`);
-      }
-      
-      // Calculate balance due
-      const newBalanceDue = amount - (current.commission ? current.commission.paid : 0);
-      
       // Set all the calculated fields
       current.items = items;
       current.totals = {
@@ -532,18 +488,9 @@ export async function updateInvoice(id, data, auditContext) {
         totalCost,
         totalProfit
       };
-      
-      current.commission = {
-        thresholdPct: COMM_THRESHOLD,
-        ratePct: COMM_RATE,
-        eligible,
-        amount,
-        paid: current.commission ? current.commission.paid : 0,
-        balanceDue: newBalanceDue >= 0 ? newBalanceDue : 0
-      };
-      
-      // Update status based on payment
-      if (currentPaidAmt >= grandTotal) {
+
+       // Update status based on payment
+       if (currentPaidAmt >= grandTotal) {
         current.status = 'Paid';
       } else if (currentPaidAmt > 0) {
         current.status = 'Partially Paid';
@@ -552,7 +499,7 @@ export async function updateInvoice(id, data, auditContext) {
       }
     }
     
-    // Set audit metadata in $locals as expected by the audit plugin
+    // Set audit context
     current.$locals = {
       audit: {
         actorId: auditContext.actor.id,
@@ -562,7 +509,6 @@ export async function updateInvoice(id, data, auditContext) {
       }
     };
     
-    // Save changes and let the audit plugin do its work
     await current.save();
     
     return current.toObject();
@@ -583,10 +529,7 @@ export async function updateInvoice(id, data, auditContext) {
 /**
  * Delete an invoice and handle all cascading effects:
  * 1. Reverse any payments (cash or bank)
- * 2. Undo commission for the salesman
- * 3. Remove any advances taken on the invoice
- * 4. Recalculate running balances
- * 5. Soft-delete the invoice record
+ * 2. Soft-delete the invoice record
  */
 export async function deleteInvoice(id, auditContext) {
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -662,119 +605,11 @@ export async function deleteInvoice(id, auditContext) {
     // Clear all payments since they've been reversed
     invoice.payments = [];
 
-    // 3. Find all advances related to this invoice
-    const SalesmanAdvance = mongoose.model('SalesmanAdvance');
-    const advances = await SalesmanAdvance.find({ 
-      invoiceId: id,
-      status: 'active'
-    })
-      .session(session)
-      .setOptions({
-        actor: auditContext.actor,
-        ip: auditContext.ip,
-        ua: auditContext.ua
-      });
-    
-    // 4. Soft-delete each advance and reverse the cash draws
-    for (const advance of advances) {
-      // Soft-delete the advance
-      advance.status = 'deleted';
-      advance.deletedAt = new Date();
-      
-      // Set audit context directly on $locals as expected by auditPlugin
-      advance.$locals = {
-        audit: {
-          actorId: auditContext.actor.id,
-          actorModel: auditContext.actor.model,
-          ip: auditContext.ip,
-          ua: auditContext.ua
-        }
-      };
-      await advance.save({ session });
-      
-      // Create a cash register entry to reverse the original cash draw
-      await cashService.recordCashEntry(
-        {
-          date: new Date(),
-          type: 'Inflow', // Inflow because we're returning the cash that was taken as an advance
-          reference: `Reversal of advance for deleted invoice ${invoice.invoiceNumber}`,
-          amount: advance.amount
-        },
-        { 
-          session,
-          actor: auditContext.actor,
-          ip: auditContext.ip,
-          ua: auditContext.ua
-        }
-      );
-    }
-
-    // 5. Adjust the salesman's commission if any was paid
-    if (invoice.commission && invoice.commission.eligible && invoice.commission.paid > 0) {
-      // Fetch the employee to update their commission balance
-      const Employee = mongoose.model('Employee');
-      const salesman = await Employee.findById(invoice.salesmanId)
-        .session(session)
-        .setOptions({
-          actor: auditContext.actor,
-          ip: auditContext.ip,
-          ua: auditContext.ua
-        });
-      
-      if (salesman) {
-        // Subtract the paid commission from the employee's record
-        const updatedSalesman = await Employee.findById(salesman._id).session(session);
-        if (updatedSalesman) {
-          updatedSalesman.$locals = {
-            audit: {
-              actorId: auditContext.actor.id,
-              actorModel: auditContext.actor.model,
-              ip: auditContext.ip,
-              ua: auditContext.ua
-            }
-          };
-          
-          if (!updatedSalesman.commissions) {
-            updatedSalesman.commissions = { total: 0, balance: 0 };
-          }
-          
-          updatedSalesman.commissions.total -= invoice.commission.paid;
-          updatedSalesman.commissions.balance -= invoice.commission.paid;
-          await updatedSalesman.save({ session });
-        }
-        
-        // If commission was paid out as an expense, create a reversal expense through the service
-        if (invoice.commission.paid > 0) {
-          // Use the expense service to create both the expense record and cash/bank entry
-          await expenseService.recordExpense(
-            {
-              date: new Date(),
-              category: 'Commissions',
-              description: `Reversal of commission for deleted invoice ${invoice.invoiceNumber}`,
-              amount: -invoice.commission.paid, // Negative amount for true reversal
-              paymentType: 'Cash',
-              paidTo: invoice.salesmanId,
-              paidToModel: 'Employee',
-              linkedTo: invoice._id,
-              linkedToModel: 'SalesInvoice'
-            },
-            {
-              session,
-              actor: auditContext.actor,
-              ip: auditContext.ip,
-              ua: auditContext.ua
-            }
-          );
-        }
-      }
-    }
-
-    // 6. Soft-delete the invoice
-    const now = new Date();
+    // 3. Soft-delete the invoice
     invoice.status = 'deleted';
-    invoice.deletedAt = now;
+    invoice.deletedAt = new Date();
     
-    // Set audit context directly on $locals as expected by auditPlugin
+    // Set audit context
     invoice.$locals = {
       audit: {
         actorId: auditContext.actor.id,
@@ -783,13 +618,13 @@ export async function deleteInvoice(id, auditContext) {
         ua: auditContext.ua
       }
     };
+    
     await invoice.save({ session });
-
     await session.commitTransaction();
     
     // Add deletion info to the returned data
     invoiceData.status = 'deleted';
-    invoiceData.deletedAt = now;
+    invoiceData.deletedAt = new Date();
     
     return invoiceData;
   } catch (err) {
@@ -889,12 +724,7 @@ export async function addPayment(
     };
     
     // Save invoice changes
-    await inv.save({ 
-      session, 
-      actor: auditContext.actor, 
-      ip: auditContext.ip, 
-      ua: auditContext.ua 
-    });
+    await inv.save({ session });
 
     // Record ledger entry within the same transaction
     const reference = `Payment for Invoice ${inv.invoiceNumber}`;
@@ -1071,173 +901,6 @@ export async function reversePayment(
           ua: auditContext.ua
         }
       );
-    }
-    
-    // Commit transaction
-    await session.commitTransaction();
-    
-    // Return updated invoice
-    const updatedInvoice = await SalesInvoice.findById(invoiceId)
-      .populate('salesmanId', 'name contact')
-      .lean();
-      
-    return updatedInvoice;
-  } catch (err) {
-    await session.abortTransaction();
-    throw err;
-  } finally {
-    session.endSession();
-  }
-}
-
-/**
- * Update the commission payment for an invoice
- * @param {string} invoiceId - The ID of the invoice
- * @param {Object} data - { amount, method, account, date, note }
- * @param {Object} auditContext - The audit context
- * @returns {Object} The updated invoice
- */
-export async function updateCommissionPayment(
-  invoiceId,
-  { amount, method, account, date, note },
-  auditContext
-) {
-  if (!mongoose.Types.ObjectId.isValid(invoiceId)) {
-    throw new Error('Invalid invoice ID');
-  }
-  
-  // Validate amount is positive
-  if (!amount || amount <= 0) {
-    throw new Error('Commission payment amount must be positive');
-  }
-  
-  // Validate payment method
-  const validMethods = ['Cash', 'Bank', 'Shabka'];
-  if (!validMethods.includes(method)) {
-    throw new Error(`Invalid payment method. Must be one of: ${validMethods.join(', ')}`);
-  }
-  
-  // Require account for non-cash payments
-  if (method !== 'Cash' && !account) {
-    throw new Error(`Account information is required for ${method} payments`);
-  }
-  
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
-  try {
-    // Find invoice and lock it for update
-    const inv = await SalesInvoice.findById(invoiceId)
-      .session(session)
-      .populate('salesmanId')
-      .setOptions({ 
-        actor: auditContext.actor, 
-        ip: auditContext.ip, 
-        ua: auditContext.ua 
-      });
-      
-    if (!inv) throw new Error('Invoice not found');
-    
-    // Check if invoice is deleted
-    if (inv.status === 'deleted') {
-      throw new Error('Cannot update commission payment on a deleted invoice');
-    }
-    
-    // Check if commission is eligible
-    if (!inv.commission.eligible) {
-      throw new Error('This invoice is not eligible for commission payment');
-    }
-    
-    // Calculate the remaining commission amount
-    const remainingCommission = inv.commission.amount - inv.commission.paid;
-    
-    // Check if payment amount exceeds the remaining commission
-    if (amount > remainingCommission) {
-      throw new Error(`Payment amount (${amount}) exceeds the remaining commission (${remainingCommission})`);
-    }
-    
-    // Standardize date handling
-    const paymentDate = date ? new Date(date) : new Date();
-    
-    // Update commission paid amount
-    inv.commission.paid += amount;
-    inv.commission.balanceDue = inv.commission.amount - inv.commission.paid;
-    
-    // Set audit metadata
-    inv.$locals = {
-      audit: {
-        actorId: auditContext.actor.id,
-        actorModel: auditContext.actor.model,
-        ip: auditContext.ip,
-        ua: auditContext.ua
-      }
-    };
-    
-    // Save invoice changes
-    await inv.save({ 
-      session, 
-      actor: auditContext.actor, 
-      ip: auditContext.ip, 
-      ua: auditContext.ua 
-    });
-    
-    // Record expense entry for the commission payment
-    const salesman = inv.salesmanId;
-    const description = note || `Commission payment for Invoice ${inv.invoiceNumber}`;
-    
-    await expenseService.recordExpense(
-      {
-        date: paymentDate,
-        category: 'Commissions',
-        description,
-        amount: amount,
-        paymentType: method,
-        paidTo: salesman._id,
-        paidToModel: 'Employee',
-        linkedTo: inv._id,
-        linkedToModel: 'SalesInvoice'
-      },
-      {
-        session,
-        actor: auditContext.actor,
-        ip: auditContext.ip,
-        ua: auditContext.ua
-      }
-    );
-    
-    // Update the salesman's commission balance
-    const Employee = mongoose.model('Employee');
-    const updatedSalesman = await Employee.findById(salesman._id)
-      .session(session)
-      .setOptions({
-        actor: auditContext.actor,
-        ip: auditContext.ip,
-        ua: auditContext.ua
-      });
-    
-    if (updatedSalesman) {
-      // Initialize commission tracking if it doesn't exist
-      if (!updatedSalesman.commissions) {
-        updatedSalesman.commissions = {
-          total: 0,
-          balance: 0
-        };
-      }
-      
-      // Update the commissions balance
-      updatedSalesman.commissions.total += amount;
-      updatedSalesman.commissions.balance += amount;
-      
-      updatedSalesman.$locals = {
-        audit: {
-          actorId: auditContext.actor.id,
-          actorModel: auditContext.actor.model,
-          ip: auditContext.ip,
-          ua: auditContext.ua
-        }
-      };
-      
-      await updatedSalesman.save({ session });
     }
     
     // Commit transaction

@@ -2,7 +2,7 @@ import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 
 export const bankApi = createApi({
   reducerPath: 'bankApi',
-  baseQuery: fetchBaseQuery({ baseUrl: '/api/v1', credentials: 'include' }),
+  baseQuery: fetchBaseQuery({ baseUrl: 'https://dubai-pos-backend.onrender.com/api/v1', credentials: 'include' }),
   tagTypes: ['BankTransaction'],
   endpoints: (builder) => ({
     getAllBankTransactions: builder.query({

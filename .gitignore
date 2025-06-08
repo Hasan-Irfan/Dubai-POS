@@ -34,3 +34,5 @@ Thumbs.db
 
 # Other
 *.local
+
+php-backend/vendor

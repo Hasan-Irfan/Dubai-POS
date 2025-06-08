@@ -8,6 +8,12 @@
 # testing
 /coverage
 
+<<<<<<< HEAD
+=======
+codeContext.py
+
+
+>>>>>>> d4e7b87 (Php backend progress!)
 # misc
 .DS_Store
 .env.local

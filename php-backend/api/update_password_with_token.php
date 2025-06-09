@@ -1,6 +1,4 @@
 <?php
-// FILE: ...\php-backend\api\update_password_with_token.php
-
 // --- Headers ---
 header('Access-Control-Allow-Origin: *');
 header('Content-Type: application/json');

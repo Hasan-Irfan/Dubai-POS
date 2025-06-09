@@ -422,7 +422,7 @@ class SalesInvoice {
             $currentPaidAmount = $paidResult['totalPaid'] ?? 0;
             $remainingBalance = $invoice['grand_total'] - $currentPaidAmount;
 
-            if ($paymentData['amount'] > round($remainingBalance, 2) + 0.001) { // Add tolerance for float comparison
+            if ($paymentData['amount'] > round($remainingBalance, 2) + 0.001) { 
                 throw new Exception("Payment amount exceeds the remaining balance of " . round($remainingBalance, 2));
             }
 

@@ -51,6 +51,91 @@ class User {
         }
         return null;
     }
+        /**
+     * Fetches a paginated and filtered list of users.
+     * @param array $options Contains filters (role, username) and pagination.
+     * @return array An array containing the list of users and the total count.
+     */
+    public function getAllUsers($options) {
+        $base_query = " FROM " . $this->table_name;
+        $where_clause = " WHERE 1=1";
+        $params = [];
+        $types = "";
+
+        if (!empty($options['role'])) {
+            $where_clause .= " AND role = ?";
+            $params[] = $options['role'];
+            $types .= "s";
+        }
+        if (!empty($options['username'])) {
+            $where_clause .= " AND username LIKE ?";
+            $username_search = "%" . $options['username'] . "%";
+            $params[] = $username_search;
+            $types .= "s";
+        }
+
+        // Get total count
+        $count_query = "SELECT count(*) as total" . $base_query . $where_clause;
+        $stmt_count = $this->conn->prepare($count_query);
+        if (!empty($params)) $stmt_count->bind_param($types, ...$params);
+        $stmt_count->execute();
+        $total = $stmt_count->get_result()->fetch_assoc()['total'];
+        $stmt_count->close();
+
+        // Get paginated data
+        $data_query = "SELECT id, username, email, role, created_at, updated_at" . $base_query . $where_clause . " ORDER BY created_at DESC LIMIT ? OFFSET ?";
+        $params[] = $options['limit'];
+        $params[] = $options['offset'];
+        $types .= "ii";
+        $stmt_data = $this->conn->prepare($data_query);
+        $stmt_data->bind_param($types, ...$params);
+        $stmt_data->execute();
+        $users = $stmt_data->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt_data->close();
+
+        return ['total' => $total, 'users' => $users];
+    }
+
+    /**
+     * Updates a user's details (username, email, role).
+     * @param int $id The ID of the user to update.
+     * @param array $data The data to update.
+     * @return bool True on success, false otherwise.
+     */
+    public function updateUser($id, $data) {
+        if (empty($data)) return true;
+
+        $query_parts = [];
+        $params = [];
+        $types = "";
+        foreach ($data as $key => $value) {
+            $query_parts[] = "`$key` = ?";
+            $params[] = $value;
+            $types .= "s";
+        }
+        $params[] = $id;
+        $types .= "i";
+
+        $query = "UPDATE " . $this->table_name . " SET " . implode(", ", $query_parts) . " WHERE id = ?";
+        $stmt = $this->conn->prepare($query);
+        $stmt->bind_param($types, ...$params);
+        return $stmt->execute();
+    }
+
+    /**
+     * Deletes a user from the database.
+     * @param int $id The ID of the user to delete.
+     * @return bool True if a record was deleted, false otherwise.
+     */
+    public function deleteUser($id) {
+        $query = "DELETE FROM " . $this->table_name . " WHERE id = ?";
+        $stmt = $this->conn->prepare($query);
+        $stmt->bind_param("i", $id);
+        if ($stmt->execute()) {
+            return $stmt->affected_rows > 0;
+        }
+        return false;
+    }
 
     /**
      * Finds a user by their email or username.

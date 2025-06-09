@@ -2,7 +2,10 @@
 // FILE: ...\php-backend\api\invoices\read.php
 
 header('Access-Control-Allow-Origin: *');
-// ... (all other headers)
+header('Content-Type: application/json');
+header('Access-Control-Allow-Methods: GET, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
+header('Access-Control-Allow-Credentials: true');
 
 require_once '../../src/Middleware/authChecker.php';
 require_once '../../config/database.php';

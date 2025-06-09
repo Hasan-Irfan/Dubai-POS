@@ -3,7 +3,12 @@
 
 header('Access-Control-Allow-Origin: *');
 header('Content-Type: application/json');
-// ... (all other headers remain the same)
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+// Specify the allowed headers in requests from the frontend.
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
+
+// Allow cookies to be sent with the request (essential for authentication).
+header('Access-Control-Allow-Credentials: true');
 
 require_once '../../src/Middleware/authChecker.php';
 require_once '../../config/database.php';

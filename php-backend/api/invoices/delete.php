@@ -2,14 +2,17 @@
 // FILE: ...\php-backend\api\invoices\delete.php
 
 header('Access-Control-Allow-Origin: *');
-// ... (all other headers)
+header('Content-Type: application/json');
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
+header('Access-Control-Allow-Credentials: true');
 
 require_once '../../src/Middleware/authChecker.php';
 require_once '../../config/database.php';
 require_once '../../src/Models/SalesInvoice.php';
 require_once '../../src/Utils/formatters.php';
 
-// --- Authorization ---
+
 $user_data = verify_jwt_and_get_user();
 if ($user_data['role'] !== 'admin' && $user_data['role'] !== 'superAdmin') {
     http_response_code(403);
@@ -17,7 +20,6 @@ if ($user_data['role'] !== 'admin' && $user_data['role'] !== 'superAdmin') {
     exit();
 }
 
-// --- Logic ---
 $data = json_decode(file_get_contents("php://input"), true);
 $invoice_id = $data['id'] ?? null;
 

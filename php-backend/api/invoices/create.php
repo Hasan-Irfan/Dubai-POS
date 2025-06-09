@@ -36,7 +36,6 @@ if (!isset($data['invoiceNumber']) || !isset($data['salesmanId']) || !isset($dat
 }
 
 try {
-    // --- Calculations (performed on server-side for integrity) ---
     $items_with_totals = [];
     $sub_total = 0;
     $total_vat = 0;

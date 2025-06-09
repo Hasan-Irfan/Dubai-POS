@@ -269,43 +269,67 @@ public function updateInvoice($id, $invoiceUpdateData, $itemsUpdateData = null) 
         throw $e;
     }
 }
-/**
- * Soft deletes an invoice and removes its associated payments.
- * NOTE: This simplified version does not yet create reversal financial transactions.
- * @param int $id The ID of the invoice to delete.
- * @return bool True on success, false on failure.
- */
-public function deleteInvoice($id) {
-    $this->conn->begin_transaction();
+    /**
+     * Soft deletes an invoice, creates financial reversals for all its payments,
+     * and recalculates subsequent balances.
+     * @param int $id The ID of the invoice to delete.
+     * @return bool True on success, false on failure.
+     */
+    public function deleteInvoice($id) {
+        $this->conn->begin_transaction();
 
-    try {
-        // For a soft delete, we will clear associated payments and then update the status.
+        try {
+            // 1. Get the full invoice details, including payments, before deleting.
+            $invoice_data = $this->findInvoiceById($id);
+            if (!$invoice_data || $invoice_data['invoice']['status'] === 'deleted') {
+                $this->conn->rollback();
+                return false;
+            }
+            foreach ($invoice_data['payments'] as $payment) {
+                $reversal_reference = "Reversal of payment for deleted Invoice #" . $invoice_data['invoice']['invoice_number'];
+                
+                if ($payment['method'] === 'Cash') {
+                    $cash_model = new CashRegister($this->conn);
+                    $cash_model->recordCashEntry([
+                        'date' => date('Y-m-d H:i:s'),
+                        'type' => 'Outflow',
+                        'reference' => $reversal_reference,
+                        'amount' => $payment['amount']
+                    ]);
+                } else { 
+                    $bank_model = new BankTransaction($this->conn);
+                    $bank_model->recordTransaction([
+                        'date' => date('Y-m-d H:i:s'),
+                        'type' => 'Outflow',
+                        'method' => $payment['method'],
+                        'reference' => $reversal_reference,
+                        'amount' => $payment['amount']
+                    ]);
+                }
+            }
+            
+            $query_del_payments = "DELETE FROM invoice_payments WHERE invoice_id = ?";
+            $stmt_del = $this->conn->prepare($query_del_payments);
+            $stmt_del->bind_param("i", $id);
+            $stmt_del->execute();
+            $stmt_del->close();
+            
+            $query_update_invoice = "UPDATE sales_invoices SET status = 'deleted', deleted_at = NOW() WHERE id = ?";
+            $stmt_update = $this->conn->prepare($query_update_invoice);
+            $stmt_update->bind_param("i", $id);
+            $stmt_update->execute();
+            
+            $affected_rows = $stmt_update->affected_rows;
+            $stmt_update->close();
 
-        // 1. Delete associated payments from the invoice_payments table.
-        $query_del_payments = "DELETE FROM invoice_payments WHERE invoice_id = ?";
-        $stmt_del = $this->conn->prepare($query_del_payments);
-        $stmt_del->bind_param("i", $id);
-        $stmt_del->execute();
-        $stmt_del->close();
+            $this->conn->commit();
 
-        // 2. Soft-delete the main invoice record by updating its status and deleted_at timestamp.
-        $query_update_invoice = "UPDATE sales_invoices SET status = 'deleted', deleted_at = NOW() WHERE id = ?";
-        $stmt_update = $this->conn->prepare($query_update_invoice);
-        $stmt_update->bind_param("i", $id);
-        $stmt_update->execute();
+            return $affected_rows > 0;
 
-        $affected_rows = $stmt_update->affected_rows;
-        $stmt_update->close();
-
-        // Commit the transaction
-        $this->conn->commit();
-
-        return $affected_rows > 0;
-
-    } catch (Exception $e) {
-        $this->conn->rollback();
-        throw $e; // Re-throw the exception
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            throw $e; 
+        }
     }
-}
 }
 ?>

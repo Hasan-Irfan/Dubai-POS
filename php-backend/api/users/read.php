@@ -1,18 +1,17 @@
 <?php
-// FILE: ...\php-backend\api\employees\read.php
+// FILE: ...\php-backend\api\users\read.php
 
 header('Access-Control-Allow-Origin: *');
 header('Content-Type: application/json');
 header('Access-Control-Allow-Methods: GET, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
 header('Access-Control-Allow-Credentials: true');
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit(); }
 
 require_once '../../src/Middleware/authChecker.php';
 require_once '../../config/database.php';
-require_once '../../src/Models/Employee.php';
-require_once '../../src/Utils/formatters.php';
+require_once '../../src/Models/User.php';
 
-// --- Authorization ---
 $user_data = verify_jwt_and_get_user();
 if ($user_data['role'] !== 'admin' && $user_data['role'] !== 'superAdmin') {
     http_response_code(403);
@@ -20,49 +19,32 @@ if ($user_data['role'] !== 'admin' && $user_data['role'] !== 'superAdmin') {
     exit();
 }
 
-// --- Logic ---
 try {
     $conn = connectDB();
-    $employee_model = new Employee($conn);
+    $user_model = new User($conn);
 
-    // Get query parameters for filtering and pagination
     $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
-    $role = $_GET['role'] ?? null;
-    $search = $_GET['search'] ?? null;
     $offset = ($page - 1) * $limit;
 
-    $result = $employee_model->getAllEmployees([
-        'role' => $role,
-        'search' => $search,
+    $result = $user_model->getAllUsers([
+        'role' => $_GET['role'] ?? null,
+        'username' => $_GET['username'] ?? null,
         'limit' => $limit,
         'offset' => $offset
     ]);
 
-    $total_employees = $result['total'];
-    $employees_db = $result['employees'];
-
-    // Format each employee record for the response
-    $formatted_employees = [];
-    foreach ($employees_db as $employee) {
-        $formatted_employees[] = format_employee_response($employee);
-    }
-
-    // Build the final response object to match the original API
     $response = [
         'success' => true,
-        'employees' => $formatted_employees,
-        'pagination' => [
-            'total' => (int)$total_employees,
-            'page' => $page,
-            'limit' => $limit,
-            'totalPages' => ceil($total_employees / $limit),
-        ]
+        'users' => $result['users'],
+        'total' => (int)$result['total'],
+        'page' => $page,
+        'limit' => $limit,
+        'totalPages' => ceil($result['total'] / $limit),
     ];
 
     http_response_code(200);
     echo json_encode($response);
-
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'An error occurred: ' . $e->getMessage()]);

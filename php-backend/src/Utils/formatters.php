@@ -116,4 +116,101 @@ function format_invoice_response($invoice_db, $items_db = [], $payments_db = [])
         'updatedAt' => $invoice_db['updated_at']
     ];
 }
+/**
+ * Formats a cash register entry from the database.
+ * @param array $entry_from_db A flat associative array from a database row.
+ * @return array The formatted cash entry data.
+ */
+function format_cash_entry_response($entry_from_db) {
+    if (!$entry_from_db) {
+        return null;
+    }
+
+    return [
+        'id' => (int)$entry_from_db['id'],
+        'date' => $entry_from_db['entry_date'],
+        'type' => $entry_from_db['type'],
+        'reference' => $entry_from_db['reference'],
+        'amount' => (float)$entry_from_db['amount'],
+        'balance' => (float)$entry_from_db['balance'],
+        'status' => $entry_from_db['status'],
+        'createdAt' => $entry_from_db['created_at'],
+        'updatedAt' => $entry_from_db['updated_at']
+    ];
+}
+/**
+ * Formats a bank transaction entry from the database.
+ * @param array $entry_from_db A flat associative array from a database row.
+ * @return array The formatted bank transaction data.
+ */
+function format_bank_transaction_response($entry_from_db) {
+    if (!$entry_from_db) {
+        return null;
+    }
+
+    return [
+        'id' => (int)$entry_from_db['id'],
+        'date' => $entry_from_db['entry_date'],
+        'type' => $entry_from_db['type'],
+        'method' => $entry_from_db['method'],
+        'reference' => $entry_from_db['reference'],
+        'amount' => (float)$entry_from_db['amount'],
+        'balance' => (float)$entry_from_db['balance'],
+        'status' => $entry_from_db['status'],
+        'createdAt' => $entry_from_db['created_at'],
+        'updatedAt' => $entry_from_db['updated_at']
+    ];
+}
+/**
+ * Formats an expense record from the database.
+ * @param array $expense_from_db A flat associative array from a database row.
+ * @return array The formatted expense data.
+ */
+function format_expense_response($expense_from_db) {
+    if (!$expense_from_db) {
+        return null;
+    }
+
+    return [
+        'id' => (int)$expense_from_db['id'],
+        'date' => $expense_from_db['entry_date'],
+        'category' => $expense_from_db['category'],
+        'description' => $expense_from_db['description'],
+        'amount' => (float)$expense_from_db['amount'],
+        'paymentType' => $expense_from_db['payment_type'],
+        'paidTo' => $expense_from_db['paid_to_id'] ? (int)$expense_from_db['paid_to_id'] : null,
+        'paidToModel' => $expense_from_db['paid_to_model'],
+        'ledgerEntryId' => $expense_from_db['ledger_entry_id'] ? (int)$expense_from_db['ledger_entry_id'] : null,
+        'ledgerEntryModel' => $expense_from_db['ledger_entry_model'],
+        'status' => $expense_from_db['status'],
+        'createdAt' => $expense_from_db['created_at'],
+        'updatedAt' => $expense_from_db['updated_at']
+    ];
+}
+/**
+ * Formats a vendor transaction record from the database.
+ * @param array $txn_from_db A flat associative array from a database row.
+ * @return array The formatted vendor transaction data.
+ */
+function format_vendor_transaction_response($txn_from_db) {
+    if (!$txn_from_db) {
+        return null;
+    }
+
+    return [
+        'id' => (int)$txn_from_db['id'],
+        'vendorId' => (int)$txn_from_db['vendor_id'],
+        'type' => $txn_from_db['type'],
+        'description' => $txn_from_db['description'],
+        'amount' => (float)$txn_from_db['amount'],
+        'balance' => (float)$txn_from_db['balance'],
+        'date' => $txn_from_db['entry_date'],
+        'method' => $txn_from_db['method'],
+        'ledgerEntryId' => $txn_from_db['ledger_entry_id'] ? (int)$txn_from_db['ledger_entry_id'] : null,
+        'ledgerEntryModel' => $txn_from_db['ledger_entry_model'],
+        'status' => $txn_from_db['status'],
+        'createdAt' => $txn_from_db['created_at'],
+        'updatedAt' => $txn_from_db['updated_at']
+    ];
+}
 ?>

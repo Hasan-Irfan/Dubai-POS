@@ -57,6 +57,19 @@ public function getAllEmployees($options) {
     return ['total' => $total, 'employees' => $employees];
 }
 /**
+ * Updates the salary balance for a given employee.
+ * @param int $employeeId The employee's ID.
+ * @param float $amount The amount to add to or subtract from the balance.
+ * @return bool True on success, false otherwise.
+ */
+public function updateSalaryBalance($employeeId, $amount) {
+    $query = "UPDATE " . $this->table_name . " SET salary_balance = salary_balance + ? WHERE id = ?";
+    $stmt = $this->conn->prepare($query);
+    $stmt->bind_param("di", $amount, $employeeId);
+    return $stmt->execute();
+}
+
+/**
  * Deletes an employee record from the database.
  * Corresponds to `Employee.findByIdAndDelete(id)`.
  * @param int $id The ID of the employee to delete.

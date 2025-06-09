@@ -8,36 +8,29 @@ class SalesInvoice {
         $this->conn = $db;
     }
 
-  
-    public function createInvoice($invoiceData, $itemsData) {
-        // We need the business rules for calculation
-        require_once __DIR__ . '/../../config/business_rules.php';
 
+    public function createInvoice($invoiceData, $itemsData) {
         $this->conn->begin_transaction();
         try {
-            // --- Commission Calculation ---
-            $profit_margin_pct = ($invoiceData['sub_total'] > 0) ? ($invoiceData['total_profit'] / $invoiceData['sub_total']) * 100 : 0;
-            $commission_eligible = ($profit_margin_pct >= COMMISSION_THRESHOLD_PCT);
-            $commission_total = $commission_eligible ? ($invoiceData['total_profit'] * (COMMISSION_RATE_PCT / 100)) : 0;
-
-            // 1. Insert into the main sales_invoices table with commission data
+            // Simplified INSERT query without commission fields
             $query1 = "INSERT INTO sales_invoices 
-                        (invoice_number, customer_name, salesman_id, sub_total, total_vat, grand_total, total_cost, total_profit, 
-                        commission_eligible, commission_rate_pct, commission_total, invoice_date) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                        (invoice_number, customer_name, salesman_id, sub_total, total_vat, grand_total, total_cost, total_profit, invoice_date) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
             $stmt1 = $this->conn->prepare($query1);
-            $rate_pct = $commission_eligible ? COMMISSION_RATE_PCT : 0;
-            $stmt1->bind_param("ssisddddsdds",
+            $stmt1->bind_param("ssisdddds",
                 $invoiceData['invoice_number'], $invoiceData['customer_name'], $invoiceData['salesman_id'],
                 $invoiceData['sub_total'], $invoiceData['total_vat'], $invoiceData['grand_total'],
-                $invoiceData['total_cost'], $invoiceData['total_profit'],
-                $commission_eligible, $rate_pct, $commission_total,
-                $invoiceData['invoice_date']
+                $invoiceData['total_cost'], $invoiceData['total_profit'], $invoiceData['invoice_date']
             );
             $stmt1->execute();
             $invoice_id = $stmt1->insert_id;
             $stmt1->close();
 
+            if (!$invoice_id) {
+                throw new Exception("Failed to create main invoice record.");
+            }
+
+            // Insert items (this logic remains the same)
             $query2 = "INSERT INTO invoice_items (invoice_id, description, quantity, unit_price, cost_price, vat_amount, line_total) VALUES (?, ?, ?, ?, ?, ?, ?)";
             $stmt2 = $this->conn->prepare($query2);
             foreach ($itemsData as $item) {
@@ -88,59 +81,7 @@ class SalesInvoice {
             'payments' => $payments_result
         ];
     }
-        /**
-     * Records a commission payment against an invoice.
-     * @param int $invoiceId The ID of the invoice.
-     * @param array $paymentData Contains amount, method, and note.
-     * @return bool True on success, false on failure.
-     */
-    public function payCommission($invoiceId, $paymentData) {
-        $this->conn->begin_transaction();
-        try {
-            // 1. Get the current invoice and lock it
-            $invQuery = "SELECT * FROM sales_invoices WHERE id = ? FOR UPDATE";
-            $stmtInv = $this->conn->prepare($invQuery);
-            $stmtInv->bind_param("i", $invoiceId);
-            $stmtInv->execute();
-            $invoice = $stmtInv->get_result()->fetch_assoc();
-            $stmtInv->close();
 
-            if (!$invoice) throw new Exception("Invoice not found.");
-            if (!$invoice['commission_eligible']) throw new Exception("This invoice is not eligible for commission.");
-
-            $balance_due = $invoice['commission_total'] - $invoice['commission_paid'];
-            if ($paymentData['amount'] > round($balance_due, 2) + 0.001) {
-                throw new Exception("Payment amount exceeds commission balance due.");
-            }
-
-            // 2. Record an expense for the commission payment
-            $expense_model = new Expense($this->conn);
-            $expense_model->recordExpense([
-                'date' => date('Y-m-d H:i:s'),
-                'category' => 'Commissions',
-                'description' => $paymentData['note'] ?? "Commission for Invoice #" . $invoice['invoice_number'],
-                'amount' => $paymentData['amount'],
-                'payment_type' => $paymentData['method'],
-                'paid_to_id' => $invoice['salesman_id'],
-                'paid_to_model' => 'Employee',
-            ]);
-
-            // 3. Update the commission_paid field on the invoice
-            $new_paid_total = $invoice['commission_paid'] + $paymentData['amount'];
-            $updateQuery = "UPDATE sales_invoices SET commission_paid = ? WHERE id = ?";
-            $stmtUpdate = $this->conn->prepare($updateQuery);
-            $stmtUpdate->bind_param("di", $new_paid_total, $invoiceId);
-            $stmtUpdate->execute();
-            $stmtUpdate->close();
-
-            $this->conn->commit();
-            return true;
-
-        } catch (Exception $e) {
-            $this->conn->rollback();
-            throw $e;
-        }
-    }
     /**
  * Fetches a paginated and filtered list of sales invoices.
  * @param array $options Contains filters, sorting, and pagination data.

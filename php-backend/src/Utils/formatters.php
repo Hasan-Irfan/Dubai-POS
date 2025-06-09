@@ -111,13 +111,7 @@ function format_invoice_response($invoice_db, $items_db = [], $payments_db = [])
         ],
         'payments' => $payments,
         'status' => $invoice_db['status'],
-        'commission' => [
-            'eligible' => (bool)$invoice_db['commission_eligible'],
-            'rate' => (float)$invoice_db['commission_rate_pct'],
-            'total' => (float)$invoice_db['commission_total'],
-            'paid' => (float)$invoice_db['commission_paid'],
-            'balanceDue' => (float)($invoice_db['commission_total'] - $invoice_db['commission_paid'])
-        ],
+        
         'deletedAt' => $invoice_db['deleted_at'],
         'createdAt' => $invoice_db['created_at'],
         'updatedAt' => $invoice_db['updated_at']

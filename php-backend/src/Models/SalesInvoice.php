@@ -8,50 +8,50 @@ class SalesInvoice {
         $this->conn = $db;
     }
 
+  
     public function createInvoice($invoiceData, $itemsData) {
-        // Start a transaction to ensure all or nothing is saved
-        $this->conn->begin_transaction();
+        // We need the business rules for calculation
+        require_once __DIR__ . '/../../config/business_rules.php';
 
+        $this->conn->begin_transaction();
         try {
-            // 1. Insert into the main sales_invoices table
-            $query1 = "INSERT INTO sales_invoices (invoice_number, customer_name, salesman_id, sub_total, total_vat, grand_total, total_cost, total_profit, invoice_date) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            // --- Commission Calculation ---
+            $profit_margin_pct = ($invoiceData['sub_total'] > 0) ? ($invoiceData['total_profit'] / $invoiceData['sub_total']) * 100 : 0;
+            $commission_eligible = ($profit_margin_pct >= COMMISSION_THRESHOLD_PCT);
+            $commission_total = $commission_eligible ? ($invoiceData['total_profit'] * (COMMISSION_RATE_PCT / 100)) : 0;
+
+            // 1. Insert into the main sales_invoices table with commission data
+            $query1 = "INSERT INTO sales_invoices 
+                        (invoice_number, customer_name, salesman_id, sub_total, total_vat, grand_total, total_cost, total_profit, 
+                        commission_eligible, commission_rate_pct, commission_total, invoice_date) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
             $stmt1 = $this->conn->prepare($query1);
-            $stmt1->bind_param("ssisdddds",
+            $rate_pct = $commission_eligible ? COMMISSION_RATE_PCT : 0;
+            $stmt1->bind_param("ssisddddsdds",
                 $invoiceData['invoice_number'], $invoiceData['customer_name'], $invoiceData['salesman_id'],
                 $invoiceData['sub_total'], $invoiceData['total_vat'], $invoiceData['grand_total'],
-                $invoiceData['total_cost'], $invoiceData['total_profit'], $invoiceData['invoice_date']
+                $invoiceData['total_cost'], $invoiceData['total_profit'],
+                $commission_eligible, $rate_pct, $commission_total,
+                $invoiceData['invoice_date']
             );
             $stmt1->execute();
             $invoice_id = $stmt1->insert_id;
             $stmt1->close();
 
-            if (!$invoice_id) {
-                throw new Exception("Failed to create main invoice record.");
-            }
-
-            // 2. Insert each item into the invoice_items table
-            $query2 = "INSERT INTO invoice_items (invoice_id, description, quantity, unit_price, cost_price, vat_amount, line_total) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?)";
+            $query2 = "INSERT INTO invoice_items (invoice_id, description, quantity, unit_price, cost_price, vat_amount, line_total) VALUES (?, ?, ?, ?, ?, ?, ?)";
             $stmt2 = $this->conn->prepare($query2);
-
             foreach ($itemsData as $item) {
-                $stmt2->bind_param("isidddd",
-                    $invoice_id, $item['description'], $item['quantity'],
-                    $item['unit_price'], $item['cost_price'], $item['vat_amount'], $item['line_total']
-                );
+                $stmt2->bind_param("isidddd", $invoice_id, $item['description'], $item['quantity'], $item['unit_price'], $item['cost_price'], $item['vat_amount'], $item['line_total']);
                 $stmt2->execute();
             }
             $stmt2->close();
 
-            // 3. If all queries were successful, commit the transaction
             $this->conn->commit();
             return $invoice_id;
 
         } catch (Exception $e) {
-            // If any query fails, roll back the entire transaction
             $this->conn->rollback();
-            throw $e; // Re-throw the exception to be caught by the API script
+            throw $e;
         }
     }
 
@@ -88,187 +88,240 @@ class SalesInvoice {
             'payments' => $payments_result
         ];
     }
+        /**
+     * Records a commission payment against an invoice.
+     * @param int $invoiceId The ID of the invoice.
+     * @param array $paymentData Contains amount, method, and note.
+     * @return bool True on success, false on failure.
+     */
+    public function payCommission($invoiceId, $paymentData) {
+        $this->conn->begin_transaction();
+        try {
+            // 1. Get the current invoice and lock it
+            $invQuery = "SELECT * FROM sales_invoices WHERE id = ? FOR UPDATE";
+            $stmtInv = $this->conn->prepare($invQuery);
+            $stmtInv->bind_param("i", $invoiceId);
+            $stmtInv->execute();
+            $invoice = $stmtInv->get_result()->fetch_assoc();
+            $stmtInv->close();
+
+            if (!$invoice) throw new Exception("Invoice not found.");
+            if (!$invoice['commission_eligible']) throw new Exception("This invoice is not eligible for commission.");
+
+            $balance_due = $invoice['commission_total'] - $invoice['commission_paid'];
+            if ($paymentData['amount'] > round($balance_due, 2) + 0.001) {
+                throw new Exception("Payment amount exceeds commission balance due.");
+            }
+
+            // 2. Record an expense for the commission payment
+            $expense_model = new Expense($this->conn);
+            $expense_model->recordExpense([
+                'date' => date('Y-m-d H:i:s'),
+                'category' => 'Commissions',
+                'description' => $paymentData['note'] ?? "Commission for Invoice #" . $invoice['invoice_number'],
+                'amount' => $paymentData['amount'],
+                'payment_type' => $paymentData['method'],
+                'paid_to_id' => $invoice['salesman_id'],
+                'paid_to_model' => 'Employee',
+            ]);
+
+            // 3. Update the commission_paid field on the invoice
+            $new_paid_total = $invoice['commission_paid'] + $paymentData['amount'];
+            $updateQuery = "UPDATE sales_invoices SET commission_paid = ? WHERE id = ?";
+            $stmtUpdate = $this->conn->prepare($updateQuery);
+            $stmtUpdate->bind_param("di", $new_paid_total, $invoiceId);
+            $stmtUpdate->execute();
+            $stmtUpdate->close();
+
+            $this->conn->commit();
+            return true;
+
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            throw $e;
+        }
+    }
     /**
  * Fetches a paginated and filtered list of sales invoices.
  * @param array $options Contains filters, sorting, and pagination data.
  * @return array An array containing the list of invoices and the total count.
  */
-public function getAllInvoices($options) {
-    $base_query = " FROM sales_invoices si WHERE 1=1";
-    $params = [];
-    $types = "";
-
-    // --- Build WHERE clause dynamically ---
-    if (isset($options['filters']['status'])) {
-        $base_query .= " AND si.status = ?";
-        $params[] = $options['filters']['status'];
-        $types .= "s";
-    } else {
-        $base_query .= " AND si.status != 'deleted'";
-    }
-
-    if (isset($options['filters']['salesmanId'])) {
-        $base_query .= " AND si.salesman_id = ?";
-        $params[] = $options['filters']['salesmanId'];
-        $types .= "i";
-    }
-
-    if (isset($options['filters']['customerName'])) {
-        $base_query .= " AND si.customer_name LIKE ?";
-        $customerName = "%" . $options['filters']['customerName'] . "%";
-        $params[] = $customerName;
-        $types .= "s";
-    }
-
-    if (isset($options['from'])) {
-        $base_query .= " AND si.invoice_date >= ?";
-        $params[] = $options['from'];
-        $types .= "s";
-    }
-
-    if (isset($options['to'])) {
-        $base_query .= " AND si.invoice_date <= ?";
-        $params[] = $options['to'];
-        $types .= "s";
-    }
-
-    // --- First Query: Get total count for pagination ---
-    $count_query = "SELECT count(si.id)" . $base_query;
-    $stmt_count = $this->conn->prepare($count_query);
-    if (!empty($params)) {
-        $stmt_count->bind_param($types, ...$params);
-    }
-    $stmt_count->execute();
-    $stmt_count->bind_result($total);
-    $stmt_count->fetch();
-    $stmt_count->close();
-
-    // --- Second Query: Get the paginated list of main invoice data ---
-    $sort_order = $options['sort'] === 'asc' ? 'ASC' : 'DESC';
-    $sort_by = 'si.created_at'; // Default sort
-
-    $data_query = "SELECT si.*, e.name as salesman_name" . $base_query . " LEFT JOIN employees e ON si.salesman_id = e.id ORDER BY " . $sort_by . " " . $sort_order . " LIMIT ? OFFSET ?";
-    $params[] = $options['limit'];
-    $params[] = $options['offset'];
-    $types .= "ii";
-
-    $stmt_data = $this->conn->prepare($data_query);
-    $stmt_data->bind_param($types, ...$params);
-    $stmt_data->execute();
-    $invoices_result = $stmt_data->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt_data->close();
-
-    if (empty($invoices_result)) {
-        return ['total' => 0, 'invoices' => []];
-    }
-
-    // --- Efficiently fetch related items and payments ---
-    $invoice_ids = array_column($invoices_result, 'id');
-    $placeholders = implode(',', array_fill(0, count($invoice_ids), '?'));
-
-    // Fetch all items for the retrieved invoices in one query
-    $items_query = "SELECT * FROM invoice_items WHERE invoice_id IN ($placeholders)";
-    $stmt_items = $this->conn->prepare($items_query);
-    $stmt_items->bind_param(str_repeat('i', count($invoice_ids)), ...$invoice_ids);
-    $stmt_items->execute();
-    $items_result = $stmt_items->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt_items->close();
-
-    // Fetch all payments for the retrieved invoices in one query
-    $payments_query = "SELECT * FROM invoice_payments WHERE invoice_id IN ($placeholders)";
-    $stmt_payments = $this->conn->prepare($payments_query);
-    $stmt_payments->bind_param(str_repeat('i', count($invoice_ids)), ...$invoice_ids);
-    $stmt_payments->execute();
-    $payments_result = $stmt_payments->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt_payments->close();
-
-    // --- Map items and payments back to their invoices ---
-    $items_by_invoice = [];
-    foreach ($items_result as $item) {
-        $items_by_invoice[$item['invoice_id']][] = $item;
-    }
-
-    $payments_by_invoice = [];
-    foreach ($payments_result as $payment) {
-        $payments_by_invoice[$payment['invoice_id']][] = $payment;
-    }
-
-    // Assemble the final nested structure
-    $assembled_invoices = [];
-    foreach ($invoices_result as $invoice) {
-        $invoice_id = $invoice['id'];
-        $assembled_invoices[] = [
-            'invoice' => $invoice,
-            'items' => $items_by_invoice[$invoice_id] ?? [],
-            'payments' => $payments_by_invoice[$invoice_id] ?? []
-        ];
-    }
-
-    return ['total' => $total, 'invoices' => $assembled_invoices];
-}
-/**
- * Updates an invoice and its items within a transaction.
- * @param int $id The ID of the invoice to update.
- * @param array $invoiceUpdateData The main invoice data to update.
- * @param array|null $itemsUpdateData The new set of items (if they are being updated).
- * @return bool True on success, false on failure.
- */
-public function updateInvoice($id, $invoiceUpdateData, $itemsUpdateData = null) {
-    $this->conn->begin_transaction();
-
-    try {
-        // --- Update main invoice record ---
-        $query_parts = [];
+    public function getAllInvoices($options) {
+        $base_query = " FROM sales_invoices si WHERE 1=1";
         $params = [];
         $types = "";
 
-        foreach ($invoiceUpdateData as $key => $value) {
-            $query_parts[] = "`$key` = ?";
-            $params[] = $value;
-            $types .= is_int($value) ? "i" : (is_float($value) ? "d" : "s");
+        // --- Build WHERE clause dynamically ---
+        if (isset($options['filters']['status'])) {
+            $base_query .= " AND si.status = ?";
+            $params[] = $options['filters']['status'];
+            $types .= "s";
+        } else {
+            $base_query .= " AND si.status != 'deleted'";
         }
 
-        $params[] = $id;
-        $types .= "i";
-
-        $query1 = "UPDATE sales_invoices SET " . implode(", ", $query_parts) . " WHERE id = ?";
-        $stmt1 = $this->conn->prepare($query1);
-        $stmt1->bind_param($types, ...$params);
-        $stmt1->execute();
-        $stmt1->close();
-
-        // --- If items are being updated, replace them ---
-        if ($itemsUpdateData !== null) {
-            // 1. Delete old items
-            $query_del = "DELETE FROM invoice_items WHERE invoice_id = ?";
-            $stmt_del = $this->conn->prepare($query_del);
-            $stmt_del->bind_param("i", $id);
-            $stmt_del->execute();
-            $stmt_del->close();
-
-            // 2. Insert new items
-            $query_ins = "INSERT INTO invoice_items (invoice_id, description, quantity, unit_price, cost_price, vat_amount, line_total) 
-                          VALUES (?, ?, ?, ?, ?, ?, ?)";
-            $stmt_ins = $this->conn->prepare($query_ins);
-            foreach ($itemsUpdateData as $item) {
-                $stmt_ins->bind_param("isidddd",
-                    $id, $item['description'], $item['quantity'],
-                    $item['unit_price'], $item['cost_price'], $item['vat_amount'], $item['line_total']
-                );
-                $stmt_ins->execute();
-            }
-            $stmt_ins->close();
+        if (isset($options['filters']['salesmanId'])) {
+            $base_query .= " AND si.salesman_id = ?";
+            $params[] = $options['filters']['salesmanId'];
+            $types .= "i";
         }
 
-        // If all queries succeeded, commit the transaction
-        $this->conn->commit();
-        return true;
+        if (isset($options['filters']['customerName'])) {
+            $base_query .= " AND si.customer_name LIKE ?";
+            $customerName = "%" . $options['filters']['customerName'] . "%";
+            $params[] = $customerName;
+            $types .= "s";
+        }
 
-    } catch (Exception $e) {
-        $this->conn->rollback();
-        throw $e;
+        if (isset($options['from'])) {
+            $base_query .= " AND si.invoice_date >= ?";
+            $params[] = $options['from'];
+            $types .= "s";
+        }
+
+        if (isset($options['to'])) {
+            $base_query .= " AND si.invoice_date <= ?";
+            $params[] = $options['to'];
+            $types .= "s";
+        }
+
+        // --- First Query: Get total count for pagination ---
+        $count_query = "SELECT count(si.id)" . $base_query;
+        $stmt_count = $this->conn->prepare($count_query);
+        if (!empty($params)) {
+            $stmt_count->bind_param($types, ...$params);
+        }
+        $stmt_count->execute();
+        $stmt_count->bind_result($total);
+        $stmt_count->fetch();
+        $stmt_count->close();
+
+        // --- Second Query: Get the paginated list of main invoice data ---
+        $sort_order = $options['sort'] === 'asc' ? 'ASC' : 'DESC';
+        $sort_by = 'si.created_at'; // Default sort
+
+        $data_query = "SELECT si.*, e.name as salesman_name" . $base_query . " LEFT JOIN employees e ON si.salesman_id = e.id ORDER BY " . $sort_by . " " . $sort_order . " LIMIT ? OFFSET ?";
+        $params[] = $options['limit'];
+        $params[] = $options['offset'];
+        $types .= "ii";
+
+        $stmt_data = $this->conn->prepare($data_query);
+        $stmt_data->bind_param($types, ...$params);
+        $stmt_data->execute();
+        $invoices_result = $stmt_data->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt_data->close();
+
+        if (empty($invoices_result)) {
+            return ['total' => 0, 'invoices' => []];
+        }
+
+        // --- Efficiently fetch related items and payments ---
+        $invoice_ids = array_column($invoices_result, 'id');
+        $placeholders = implode(',', array_fill(0, count($invoice_ids), '?'));
+
+        // Fetch all items for the retrieved invoices in one query
+        $items_query = "SELECT * FROM invoice_items WHERE invoice_id IN ($placeholders)";
+        $stmt_items = $this->conn->prepare($items_query);
+        $stmt_items->bind_param(str_repeat('i', count($invoice_ids)), ...$invoice_ids);
+        $stmt_items->execute();
+        $items_result = $stmt_items->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt_items->close();
+
+        // Fetch all payments for the retrieved invoices in one query
+        $payments_query = "SELECT * FROM invoice_payments WHERE invoice_id IN ($placeholders)";
+        $stmt_payments = $this->conn->prepare($payments_query);
+        $stmt_payments->bind_param(str_repeat('i', count($invoice_ids)), ...$invoice_ids);
+        $stmt_payments->execute();
+        $payments_result = $stmt_payments->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt_payments->close();
+
+        // --- Map items and payments back to their invoices ---
+        $items_by_invoice = [];
+        foreach ($items_result as $item) {
+            $items_by_invoice[$item['invoice_id']][] = $item;
+        }
+
+        $payments_by_invoice = [];
+        foreach ($payments_result as $payment) {
+            $payments_by_invoice[$payment['invoice_id']][] = $payment;
+        }
+
+        // Assemble the final nested structure
+        $assembled_invoices = [];
+        foreach ($invoices_result as $invoice) {
+            $invoice_id = $invoice['id'];
+            $assembled_invoices[] = [
+                'invoice' => $invoice,
+                'items' => $items_by_invoice[$invoice_id] ?? [],
+                'payments' => $payments_by_invoice[$invoice_id] ?? []
+            ];
+        }
+
+        return ['total' => $total, 'invoices' => $assembled_invoices];
     }
-}
+    /**
+     * Updates an invoice and its items within a transaction.
+     * @param int $id The ID of the invoice to update.
+     * @param array $invoiceUpdateData The main invoice data to update.
+     * @param array|null $itemsUpdateData The new set of items (if they are being updated).
+     * @return bool True on success, false on failure.
+     */
+    public function updateInvoice($id, $invoiceUpdateData, $itemsUpdateData = null) {
+        $this->conn->begin_transaction();
+
+        try {
+            // --- Update main invoice record ---
+            $query_parts = [];
+            $params = [];
+            $types = "";
+
+            foreach ($invoiceUpdateData as $key => $value) {
+                $query_parts[] = "`$key` = ?";
+                $params[] = $value;
+                $types .= is_int($value) ? "i" : (is_float($value) ? "d" : "s");
+            }
+
+            $params[] = $id;
+            $types .= "i";
+
+            $query1 = "UPDATE sales_invoices SET " . implode(", ", $query_parts) . " WHERE id = ?";
+            $stmt1 = $this->conn->prepare($query1);
+            $stmt1->bind_param($types, ...$params);
+            $stmt1->execute();
+            $stmt1->close();
+
+            // --- If items are being updated, replace them ---
+            if ($itemsUpdateData !== null) {
+                // 1. Delete old items
+                $query_del = "DELETE FROM invoice_items WHERE invoice_id = ?";
+                $stmt_del = $this->conn->prepare($query_del);
+                $stmt_del->bind_param("i", $id);
+                $stmt_del->execute();
+                $stmt_del->close();
+
+                // 2. Insert new items
+                $query_ins = "INSERT INTO invoice_items (invoice_id, description, quantity, unit_price, cost_price, vat_amount, line_total) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?)";
+                $stmt_ins = $this->conn->prepare($query_ins);
+                foreach ($itemsUpdateData as $item) {
+                    $stmt_ins->bind_param("isidddd",
+                        $id, $item['description'], $item['quantity'],
+                        $item['unit_price'], $item['cost_price'], $item['vat_amount'], $item['line_total']
+                    );
+                    $stmt_ins->execute();
+                }
+                $stmt_ins->close();
+            }
+
+            // If all queries succeeded, commit the transaction
+            $this->conn->commit();
+            return true;
+
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            throw $e;
+        }
+    }
     /**
      * Soft deletes an invoice, creates financial reversals for all its payments,
      * and recalculates subsequent balances.
@@ -329,6 +382,164 @@ public function updateInvoice($id, $invoiceUpdateData, $itemsUpdateData = null) 
         } catch (Exception $e) {
             $this->conn->rollback();
             throw $e; 
+        }
+    }
+    /**
+ * Adds a new payment to an existing invoice and records the corresponding ledger entry.
+ * @param int $invoiceId The ID of the invoice receiving the payment.
+ * @param array $paymentData Contains amount, method, and date.
+ * @return bool True on success, false on failure.
+ */
+    public function addPayment($invoiceId, $paymentData) {
+        $this->conn->begin_transaction();
+        try {
+            // 1. Get the current invoice and lock it for the transaction
+            $invoiceQuery = "SELECT * FROM sales_invoices WHERE id = ? FOR UPDATE";
+            $stmt = $this->conn->prepare($invoiceQuery);
+            $stmt->bind_param("i", $invoiceId);
+            $stmt->execute();
+            $invoice = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$invoice) {
+                throw new Exception("Invoice not found.");
+            }
+            if ($invoice['status'] === 'deleted') {
+                throw new Exception("Cannot add payment to a deleted invoice.");
+            }
+            if ($invoice['status'] === 'Paid') {
+                throw new Exception("Invoice is already fully paid.");
+            }
+
+            // 2. Calculate current paid amount and remaining balance
+            $paymentsQuery = "SELECT SUM(amount) as totalPaid FROM invoice_payments WHERE invoice_id = ?";
+            $stmt_paid = $this->conn->prepare($paymentsQuery);
+            $stmt_paid->bind_param("i", $invoiceId);
+            $stmt_paid->execute();
+            $paidResult = $stmt_paid->get_result()->fetch_assoc();
+            $stmt_paid->close();
+
+            $currentPaidAmount = $paidResult['totalPaid'] ?? 0;
+            $remainingBalance = $invoice['grand_total'] - $currentPaidAmount;
+
+            if ($paymentData['amount'] > round($remainingBalance, 2) + 0.001) { // Add tolerance for float comparison
+                throw new Exception("Payment amount exceeds the remaining balance of " . round($remainingBalance, 2));
+            }
+
+            // 3. Insert the new payment record
+            $payment_id = uniqid('pay_'); // Generate a unique ID for the payment
+            $insertPaymentQuery = "INSERT INTO invoice_payments (id, invoice_id, payment_date, amount, method) VALUES (?, ?, ?, ?, ?)";
+            $stmt_insert_pay = $this->conn->prepare($insertPaymentQuery);
+            $paymentDate = $paymentData['date'] ?? date('Y-m-d H:i:s');
+            $stmt_insert_pay->bind_param("sisds", $payment_id, $invoiceId, $paymentDate, $paymentData['amount'], $paymentData['method']);
+            $stmt_insert_pay->execute();
+            $stmt_insert_pay->close();
+
+            // 4. Create the corresponding Cash or Bank ledger entry
+            $reference = "Payment for Invoice #" . $invoice['invoice_number'];
+            if ($paymentData['method'] === 'Cash') {
+                $cash_model = new CashRegister($this->conn);
+                $cash_model->recordCashEntry(['date' => $paymentDate, 'type' => 'Inflow', 'reference' => $reference, 'amount' => $paymentData['amount']]);
+            } else {
+                $bank_model = new BankTransaction($this->conn);
+                $bank_model->recordTransaction(['date' => $paymentDate, 'type' => 'Inflow', 'method' => $paymentData['method'], 'reference' => $reference, 'amount' => $paymentData['amount']]);
+            }
+
+            // 5. Update the invoice status
+            $newPaidAmount = $currentPaidAmount + $paymentData['amount'];
+            $newStatus = 'Partially Paid';
+            if ($newPaidAmount >= $invoice['grand_total']) {
+                $newStatus = 'Paid';
+            }
+
+            $updateInvoiceQuery = "UPDATE sales_invoices SET status = ? WHERE id = ?";
+            $stmt_update_inv = $this->conn->prepare($updateInvoiceQuery);
+            $stmt_update_inv->bind_param("si", $newStatus, $invoiceId);
+            $stmt_update_inv->execute();
+            $stmt_update_inv->close();
+
+            $this->conn->commit();
+            return true;
+
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            throw $e;
+        }
+    }
+    /**
+     * Reverses a single payment on an invoice, creates a financial reversal,
+     * and updates the invoice status accordingly.
+     * @param int $invoiceId The ID of the invoice.
+     * @param string $paymentId The unique ID of the payment to reverse.
+     * @param string $reason The reason for the reversal.
+     * @return bool True on success, false on failure.
+     */
+    public function reversePayment($invoiceId, $paymentId, $reason) {
+        $this->conn->begin_transaction();
+        try {
+            // 1. Find the specific payment to be reversed.
+            $paymentQuery = "SELECT * FROM invoice_payments WHERE id = ? AND invoice_id = ?";
+            $stmt_pay = $this->conn->prepare($paymentQuery);
+            $stmt_pay->bind_param("si", $paymentId, $invoiceId);
+            $stmt_pay->execute();
+            $payment = $stmt_pay->get_result()->fetch_assoc();
+            $stmt_pay->close();
+
+            if (!$payment) {
+                throw new Exception("Payment with ID $paymentId not found on invoice $invoiceId.");
+            }
+
+            // 2. Create the financial reversal in the correct ledger.
+            $reversal_reference = "Reversal for Invoice #" . $invoiceId . ": " . $reason;
+            if ($payment['method'] === 'Cash') {
+                $cash_model = new CashRegister($this->conn);
+                $cash_model->recordCashEntry(['date' => date('Y-m-d H:i:s'), 'type' => 'Outflow', 'reference' => $reversal_reference, 'amount' => $payment['amount']]);
+            } else { // Bank or Shabka
+                $bank_model = new BankTransaction($this->conn);
+                $bank_model->recordTransaction(['date' => date('Y-m-d H:i:s'), 'type' => 'Outflow', 'method' => $payment['method'], 'reference' => $reversal_reference, 'amount' => $payment['amount']]);
+            }
+
+            // 3. Delete the payment record from the invoice.
+            $deleteQuery = "DELETE FROM invoice_payments WHERE id = ?";
+            $stmt_del = $this->conn->prepare($deleteQuery);
+            $stmt_del->bind_param("s", $paymentId);
+            $stmt_del->execute();
+            $stmt_del->close();
+
+            // 4. Recalculate the invoice's status.
+            $invoiceQuery = "SELECT grand_total FROM sales_invoices WHERE id = ?";
+            $stmt_inv = $this->conn->prepare($invoiceQuery);
+            $stmt_inv->bind_param("i", $invoiceId);
+            $stmt_inv->execute();
+            $invoice = $stmt_inv->get_result()->fetch_assoc();
+            $stmt_inv->close();
+
+            $paymentsQuery = "SELECT SUM(amount) as totalPaid FROM invoice_payments WHERE invoice_id = ?";
+            $stmt_paid = $this->conn->prepare($paymentsQuery);
+            $stmt_paid->bind_param("i", $invoiceId);
+            $stmt_paid->execute();
+            $paidResult = $stmt_paid->get_result()->fetch_assoc();
+            $stmt_paid->close();
+
+            $currentPaidAmount = $paidResult['totalPaid'] ?? 0;
+
+            $newStatus = 'Unpaid';
+            if ($currentPaidAmount > 0) {
+                $newStatus = ($currentPaidAmount >= $invoice['grand_total']) ? 'Paid' : 'Partially Paid';
+            }
+
+            $updateInvoiceQuery = "UPDATE sales_invoices SET status = ? WHERE id = ?";
+            $stmt_update_inv = $this->conn->prepare($updateInvoiceQuery);
+            $stmt_update_inv->bind_param("si", $newStatus, $invoiceId);
+            $stmt_update_inv->execute();
+            $stmt_update_inv->close();
+
+            $this->conn->commit();
+            return true;
+
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            throw $e;
         }
     }
 }

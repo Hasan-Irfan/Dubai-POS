@@ -9,12 +9,11 @@ class SalesInvoice {
     }
 
 
-    public function createInvoice($invoiceData, $itemsData) {
+     public function createInvoice($invoiceData, $itemsData, $paymentsData = null) {
         $this->conn->begin_transaction();
         try {
-            // Simplified INSERT query without commission fields
-            $query1 = "INSERT INTO sales_invoices 
-                        (invoice_number, customer_name, salesman_id, sub_total, total_vat, grand_total, total_cost, total_profit, invoice_date) 
+            // 1. Insert the main invoice record with a default status of 'Unpaid'
+            $query1 = "INSERT INTO sales_invoices (invoice_number, customer_name, salesman_id, sub_total, total_vat, grand_total, total_cost, total_profit, invoice_date) 
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
             $stmt1 = $this->conn->prepare($query1);
             $stmt1->bind_param("ssisdddds",
@@ -30,7 +29,7 @@ class SalesInvoice {
                 throw new Exception("Failed to create main invoice record.");
             }
 
-            // Insert items (this logic remains the same)
+            // 2. Insert invoice items
             $query2 = "INSERT INTO invoice_items (invoice_id, description, quantity, unit_price, cost_price, vat_amount, line_total) VALUES (?, ?, ?, ?, ?, ?, ?)";
             $stmt2 = $this->conn->prepare($query2);
             foreach ($itemsData as $item) {
@@ -38,6 +37,27 @@ class SalesInvoice {
                 $stmt2->execute();
             }
             $stmt2->close();
+            
+            // 3. Process initial payments, if any
+            $totalPaid = 0;
+            if ($paymentsData && count($paymentsData) > 0) {
+                foreach ($paymentsData as $payment) {
+                    $this->addPayment($invoice_id, $payment); // Reuse the addPayment logic within the transaction
+                    $totalPaid += $payment['amount'];
+                }
+            }
+            
+            // 4. Update the final status of the invoice based on payments
+            $finalStatus = 'Unpaid';
+            if ($totalPaid > 0) {
+                $finalStatus = ($totalPaid >= $invoiceData['grand_total']) ? 'Paid' : 'Partially Paid';
+            }
+            
+            $updateStatusQuery = "UPDATE sales_invoices SET status = ? WHERE id = ?";
+            $stmtUpdate = $this->conn->prepare($updateStatusQuery);
+            $stmtUpdate->bind_param("si", $finalStatus, $invoice_id);
+            $stmtUpdate->execute();
+            $stmtUpdate->close();
 
             $this->conn->commit();
             return $invoice_id;

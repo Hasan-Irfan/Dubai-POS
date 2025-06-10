@@ -201,5 +201,61 @@ public function deleteEntry($id) {
         throw $e;
     }
 }
+/**
+     * Restores a soft-deleted cash entry and recalculates all subsequent balances.
+     * @param int $id The ID of the entry to restore.
+     * @return bool True on success, false on failure.
+     */
+    public function restoreEntry($id) {
+        $this->conn->begin_transaction();
+        try {
+            // 1. Find the soft-deleted entry.
+            $entry_to_restore = $this->conn->query("SELECT * FROM " . $this->table_name . " WHERE id = $id AND status = 'deleted'")->fetch_assoc();
+            if (!$entry_to_restore) {
+                $this->conn->rollback();
+                return false; // Entry not found or not deleted
+            }
+
+            // 2. Restore the entry by setting its status to 'active'.
+            $this->conn->query("UPDATE " . $this->table_name . " SET status = 'active' WHERE id = $id");
+
+            // 3. Find the last active entry BEFORE the one we restored to get a starting balance.
+            $prev_query = "SELECT balance FROM " . $this->table_name . " WHERE (entry_date < ? OR (entry_date = ? AND id < ?)) AND status = 'active' ORDER BY entry_date DESC, id DESC LIMIT 1";
+            $stmt_prev = $this->conn->prepare($prev_query);
+            $stmt_prev->bind_param("ssi", $entry_to_restore['entry_date'], $entry_to_restore['entry_date'], $id);
+            $stmt_prev->execute();
+            $result_prev = $stmt_prev->get_result();
+            $running_balance = ($result_prev->num_rows > 0) ? $result_prev->fetch_assoc()['balance'] : 0;
+            $stmt_prev->close();
+            
+            // 4. Get the restored entry itself and all subsequent active entries to recalculate.
+            $subsequent_query = "SELECT id, type, amount FROM " . $this->table_name . " WHERE (entry_date > ? OR (entry_date = ? AND id >= ?)) AND status = 'active' ORDER BY entry_date ASC, id ASC";
+            $stmt_sub = $this->conn->prepare($subsequent_query);
+            $stmt_sub->bind_param("ssi", $entry_to_restore['entry_date'], $entry_to_restore['entry_date'], $id);
+            $stmt_sub->execute();
+            $entries_to_recalculate = $stmt_sub->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt_sub->close();
+
+            // 5. Loop through and update balances.
+            $update_balance_query = "UPDATE " . $this->table_name . " SET balance = ? WHERE id = ?";
+            $stmt_update = $this->conn->prepare($update_balance_query);
+            foreach ($entries_to_recalculate as $entry) {
+                if ($entry['type'] === 'Inflow') {
+                    $running_balance += $entry['amount'];
+                } elseif ($entry['type'] === 'Outflow') {
+                    $running_balance -= $entry['amount'];
+                }
+                $stmt_update->bind_param("di", $running_balance, $entry['id']);
+                $stmt_update->execute();
+            }
+            $stmt_update->close();
+
+            $this->conn->commit();
+            return true;
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            throw $e;
+        }
+    }
 }
 ?>

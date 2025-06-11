@@ -25,6 +25,13 @@ $data = json_decode(file_get_contents("php://input"), true);
 $invoice_id = $data['id'] ?? null;
 $payment_data = $data['paymentData'] ?? null;
 
+$payment_data_to_save = [
+        'amount' => $payment_data['amount'],
+        'method' => $payment_data['method'],
+        'account' => $payment_data['account'] ?? null, 
+        'date' => $payment_data['date'] ?? null
+    ];
+
 if (!$invoice_id || !$payment_data || !isset($payment_data['amount']) || !isset($payment_data['method'])) {
     http_response_code(400);
     echo json_encode(['success' => false, 'message' => 'Invoice ID and paymentData (amount, method) are required.']);
@@ -35,7 +42,7 @@ try {
     $conn = connectDB();
     $invoice_model = new SalesInvoice($conn);
 
-    $success = $invoice_model->addPayment($invoice_id, $payment_data);
+    $success = $invoice_model->addPayment($invoice_id, $payment_data_to_save);
 
     if ($success) {
         // Fetch the updated invoice to return in the response

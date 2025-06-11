@@ -19,9 +19,27 @@ $user_data = verify_jwt_and_get_user();
 
 $data = json_decode(file_get_contents("php://input"), true);
 
-if (!isset($data['category'], $data['description'], $data['amount'], $data['paymentType'])) {
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Missing required fields: category, description, amount, and paymentType.']);
+$errors = [];
+if (!isset($data['category']) || empty($data['category'])) $errors[] = 'Category is a required field.';
+if (!isset($data['description']) || empty($data['description'])) $errors[] = 'Description is a required field.';
+if (!isset($data['amount']) || !is_numeric($data['amount'])) $errors[] = 'Amount must be a numeric value.';
+if (isset($data['amount']) && is_numeric($data['amount']) && $data['amount'] == 0) $errors[] = 'Amount cannot be zero.';
+if (!isset($data['paymentType']) || empty($data['paymentType'])) $errors[] = 'Payment type is a required field.';
+
+// Value validation
+$allowed_categories = ['Rent', 'Utilities', 'Salaries', 'Commissions', 'Advances Recovered', 'Inventory', 'Miscellaneous'];
+if (isset($data['category']) && !in_array($data['category'], $allowed_categories)) {
+    $errors[] = 'Invalid category provided.';
+}
+
+$allowed_payment_types = ['Cash', 'Bank', 'Shabka'];
+if (isset($data['paymentType']) && !in_array($data['paymentType'], $allowed_payment_types)) {
+    $errors[] = 'Invalid payment type provided.';
+}
+
+if (!empty($errors)) {
+    http_response_code(400); // Bad Request
+    echo json_encode(['success' => false, 'message' => 'Validation failed.', 'errors' => $errors]);
     exit();
 }
 

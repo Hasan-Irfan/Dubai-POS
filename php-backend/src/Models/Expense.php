@@ -9,33 +9,34 @@ class Expense {
         $this->conn = $db;
     }
 
-    public function recordExpense($data) {
+    public function recordExpense($data, $audit_context = []) {
         $this->conn->begin_transaction();
         try {
-            // 1. Create the ledger entry first (cash or bank outflow)
+            // --- FIX: Opening Balance Check ---
+            if ($data['payment_type'] === 'Cash') {
+                $opening_check = $this->conn->query("SELECT id FROM cash_register WHERE type = 'Opening' AND status = 'active' LIMIT 1");
+                if ($opening_check->num_rows === 0) {
+                    throw new Exception('Cash opening balance is required before recording cash expenses.');
+                }
+            } else { // Bank or Shabka
+                $opening_check = $this->conn->query("SELECT id FROM bank_transactions WHERE type = 'Opening' AND status = 'active' LIMIT 1");
+                if ($opening_check->num_rows === 0) {
+                    throw new Exception('Bank opening balance is required before recording bank/shabka expenses.');
+                }
+            }
+            // --- End of FIX ---
+
             $ledger_entry_id = null;
             $ledger_entry_model = null;
-
             $reference = "Expense: " . ($data['description'] ?? 'N/A');
 
             if ($data['payment_type'] === 'Cash') {
                 $cash_model = new CashRegister($this->conn);
-                $ledger_entry_id = $cash_model->recordCashEntry([
-                    'date' => $data['date'],
-                    'type' => 'Outflow',
-                    'reference' => $reference,
-                    'amount' => $data['amount']
-                ]);
+                $ledger_entry_id = $cash_model->recordCashEntry($data); // Pass full data for date
                 $ledger_entry_model = 'CashRegister';
-            } else { // Bank or Shabka
+            } else {
                 $bank_model = new BankTransaction($this->conn);
-                $ledger_entry_id = $bank_model->recordTransaction([
-                    'date' => $data['date'],
-                    'type' => 'Outflow',
-                    'method' => $data['payment_type'],
-                    'reference' => $reference,
-                    'amount' => $data['amount']
-                ]);
+                $ledger_entry_id = $bank_model->recordTransaction($data); // Pass full data for date
                 $ledger_entry_model = 'BankTransaction';
             }
 
@@ -43,19 +44,21 @@ class Expense {
                 throw new Exception("Failed to create ledger transaction for expense.");
             }
 
-            // 2. Now, create the expense record and link it to the ledger entry
-            $query = "INSERT INTO " . $this->table_name . " 
-                        (entry_date, category, description, amount, payment_type, paid_to_id, paid_to_model, ledger_entry_id, ledger_entry_model) 
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            // --- FIX: Add Audit Info ---
+            $actor_id = $audit_context['actor_id'] ?? null;
+            $actor_model = $audit_context['actor_model'] ?? null;
+            // --- End of FIX ---
 
+            $query = "INSERT INTO " . $this->table_name . " 
+                        (entry_date, category, description, amount, payment_type, paid_to_id, paid_to_model, ledger_entry_id, ledger_entry_model, actor_id, actor_model) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
             $stmt = $this->conn->prepare($query);
             $entry_date = $data['date'] ?? date('Y-m-d H:i:s');
-            $stmt->bind_param("ssdsisiis", 
+            $stmt->bind_param("ssdsisiisii", 
                 $entry_date, $data['category'], $data['description'], $data['amount'],
                 $data['payment_type'], $data['paid_to_id'], $data['paid_to_model'],
-                $ledger_entry_id, $ledger_entry_model
+                $ledger_entry_id, $ledger_entry_model, $actor_id, $actor_model
             );
-
             $stmt->execute();
             $new_id = $stmt->insert_id;
             $stmt->close();
@@ -127,118 +130,118 @@ class Expense {
         return ['total' => $total, 'expenses' => $expenses];
     }
     /**
- * Updates an expense record. If amount or payment type changes, it reverses the old
- * ledger entry and creates a new one to maintain financial integrity.
- * @param int $id The ID of the expense to update.
- * @param array $data The new data for the expense.
- * @return bool True on success, false on failure.
- */
-public function updateExpense($id, $data) {
-    $this->conn->begin_transaction();
-    try {
-        // 1. Get the current state of the expense
-        $current_expense = $this->findExpenseById($id);
-        if (!$current_expense) {
+     * Updates an expense record. If amount or payment type changes, it reverses the old
+     * ledger entry and creates a new one to maintain financial integrity.
+     * @param int $id The ID of the expense to update.
+     * @param array $data The new data for the expense.
+     * @return bool True on success, false on failure.
+     */
+    public function updateExpense($id, $data) {
+        $this->conn->begin_transaction();
+        try {
+            // 1. Get the current state of the expense
+            $current_expense = $this->findExpenseById($id);
+            if (!$current_expense) {
+                $this->conn->rollback();
+                return false;
+            }
+
+            // 2. Determine if a financial transaction reversal/re-creation is needed
+            $needs_ledger_update = isset($data['amount']) && $data['amount'] != $current_expense['amount'] ||
+                                isset($data['payment_type']) && $data['payment_type'] != $current_expense['payment_type'];
+
+            if ($needs_ledger_update) {
+                // Reverse the original ledger entry
+                if ($current_expense['ledger_entry_model'] === 'CashRegister') {
+                    $cash_model = new CashRegister($this->conn);
+                    $cash_model->deleteEntry($current_expense['ledger_entry_id']);
+                } else {
+                    $bank_model = new BankTransaction($this->conn);
+                    $bank_model->deleteTransaction($current_expense['ledger_entry_id']);
+                }
+
+                // Create a new ledger entry with the updated details
+                $new_payment_type = $data['payment_type'] ?? $current_expense['payment_type'];
+                $new_amount = $data['amount'] ?? $current_expense['amount'];
+                $new_description = $data['description'] ?? $current_expense['description'];
+                $new_reference = "Expense: " . $new_description;
+                $new_ledger_id = null;
+                $new_ledger_model = null;
+
+                if ($new_payment_type === 'Cash') {
+                    $cash_model = new CashRegister($this->conn);
+                    $new_ledger_id = $cash_model->recordCashEntry(['date' => date('Y-m-d H:i:s'), 'type' => 'Outflow', 'reference' => $new_reference, 'amount' => $new_amount]);
+                    $new_ledger_model = 'CashRegister';
+                } else {
+                    $bank_model = new BankTransaction($this->conn);
+                    $new_ledger_id = $bank_model->recordTransaction(['date' => date('Y-m-d H:i:s'), 'type' => 'Outflow', 'method' => $new_payment_type, 'reference' => $new_reference, 'amount' => $new_amount]);
+                    $new_ledger_model = 'BankTransaction';
+                }
+
+                $data['ledger_entry_id'] = $new_ledger_id;
+                $data['ledger_entry_model'] = $new_ledger_model;
+            }
+
+            // 3. Update the expense record itself
+            $query_parts = [];
+            $params = [];
+            $types = "";
+            foreach ($data as $key => $value) {
+                $query_parts[] = "`$key` = ?";
+                $params[] = $value;
+                $types .= is_int($value) ? "i" : (is_float($value) ? "d" : "s");
+            }
+            $params[] = $id;
+            $types .= "i";
+
+            $update_query = "UPDATE " . $this->table_name . " SET " . implode(", ", $query_parts) . " WHERE id = ?";
+            $stmt_update = $this->conn->prepare($update_query);
+            $stmt_update->bind_param($types, ...$params);
+            $stmt_update->execute();
+            $stmt_update->close();
+
+            $this->conn->commit();
+            return true;
+
+        } catch (Exception $e) {
             $this->conn->rollback();
-            return false;
+            throw $e;
         }
-
-        // 2. Determine if a financial transaction reversal/re-creation is needed
-        $needs_ledger_update = isset($data['amount']) && $data['amount'] != $current_expense['amount'] ||
-                               isset($data['payment_type']) && $data['payment_type'] != $current_expense['payment_type'];
-
-        if ($needs_ledger_update) {
-            // Reverse the original ledger entry
-            if ($current_expense['ledger_entry_model'] === 'CashRegister') {
-                $cash_model = new CashRegister($this->conn);
-                $cash_model->deleteEntry($current_expense['ledger_entry_id']);
-            } else {
-                $bank_model = new BankTransaction($this->conn);
-                $bank_model->deleteTransaction($current_expense['ledger_entry_id']);
-            }
-
-            // Create a new ledger entry with the updated details
-            $new_payment_type = $data['payment_type'] ?? $current_expense['payment_type'];
-            $new_amount = $data['amount'] ?? $current_expense['amount'];
-            $new_description = $data['description'] ?? $current_expense['description'];
-            $new_reference = "Expense: " . $new_description;
-            $new_ledger_id = null;
-            $new_ledger_model = null;
-
-            if ($new_payment_type === 'Cash') {
-                $cash_model = new CashRegister($this->conn);
-                $new_ledger_id = $cash_model->recordCashEntry(['date' => date('Y-m-d H:i:s'), 'type' => 'Outflow', 'reference' => $new_reference, 'amount' => $new_amount]);
-                $new_ledger_model = 'CashRegister';
-            } else {
-                $bank_model = new BankTransaction($this->conn);
-                $new_ledger_id = $bank_model->recordTransaction(['date' => date('Y-m-d H:i:s'), 'type' => 'Outflow', 'method' => $new_payment_type, 'reference' => $new_reference, 'amount' => $new_amount]);
-                $new_ledger_model = 'BankTransaction';
-            }
-
-            $data['ledger_entry_id'] = $new_ledger_id;
-            $data['ledger_entry_model'] = $new_ledger_model;
-        }
-
-        // 3. Update the expense record itself
-        $query_parts = [];
-        $params = [];
-        $types = "";
-        foreach ($data as $key => $value) {
-            $query_parts[] = "`$key` = ?";
-            $params[] = $value;
-            $types .= is_int($value) ? "i" : (is_float($value) ? "d" : "s");
-        }
-        $params[] = $id;
-        $types .= "i";
-
-        $update_query = "UPDATE " . $this->table_name . " SET " . implode(", ", $query_parts) . " WHERE id = ?";
-        $stmt_update = $this->conn->prepare($update_query);
-        $stmt_update->bind_param($types, ...$params);
-        $stmt_update->execute();
-        $stmt_update->close();
-
-        $this->conn->commit();
-        return true;
-
-    } catch (Exception $e) {
-        $this->conn->rollback();
-        throw $e;
     }
-}
-public function deleteExpense($id) {
-    $this->conn->begin_transaction();
-    try {
-        $expense = $this->findExpenseById($id);
-        if (!$expense || $expense['status'] === 'deleted') {
+    public function deleteExpense($id) {
+        $this->conn->begin_transaction();
+        try {
+            $expense = $this->findExpenseById($id);
+            if (!$expense || $expense['status'] === 'deleted') {
+                $this->conn->rollback();
+                return false;
+            }
+
+            // Reverse the associated ledger entry
+            if ($expense['ledger_entry_id']) {
+                if ($expense['ledger_entry_model'] === 'CashRegister') {
+                    $cash_model = new CashRegister($this->conn);
+                    $cash_model->deleteEntry($expense['ledger_entry_id']);
+                } else {
+                    $bank_model = new BankTransaction($this->conn);
+                    $bank_model->deleteTransaction($expense['ledger_entry_id']);
+                }
+            }
+
+            // Soft delete the expense itself
+            $query = "UPDATE " . $this->table_name . " SET status = 'deleted' WHERE id = ?";
+            $stmt = $this->conn->prepare($query);
+            $stmt->bind_param("i", $id);
+            $stmt->execute();
+            $affected_rows = $stmt->affected_rows;
+            $stmt->close();
+
+            $this->conn->commit();
+            return $affected_rows > 0;
+        } catch (Exception $e) {
             $this->conn->rollback();
-            return false;
+            throw $e;
         }
-
-        // Reverse the associated ledger entry
-        if ($expense['ledger_entry_id']) {
-            if ($expense['ledger_entry_model'] === 'CashRegister') {
-                $cash_model = new CashRegister($this->conn);
-                $cash_model->deleteEntry($expense['ledger_entry_id']);
-            } else {
-                $bank_model = new BankTransaction($this->conn);
-                $bank_model->deleteTransaction($expense['ledger_entry_id']);
-            }
-        }
-
-        // Soft delete the expense itself
-        $query = "UPDATE " . $this->table_name . " SET status = 'deleted' WHERE id = ?";
-        $stmt = $this->conn->prepare($query);
-        $stmt->bind_param("i", $id);
-        $stmt->execute();
-        $affected_rows = $stmt->affected_rows;
-        $stmt->close();
-
-        $this->conn->commit();
-        return $affected_rows > 0;
-    } catch (Exception $e) {
-        $this->conn->rollback();
-        throw $e;
     }
-}
 }
 ?>

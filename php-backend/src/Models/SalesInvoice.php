@@ -389,10 +389,12 @@ class SalesInvoice {
 
             // 3. Insert the new payment record
             $payment_id = uniqid('pay_'); // Generate a unique ID for the payment
-            $insertPaymentQuery = "INSERT INTO invoice_payments (id, invoice_id, payment_date, amount, method) VALUES (?, ?, ?, ?, ?)";
+            
+            $insertPaymentQuery = "INSERT INTO invoice_payments (id, invoice_id, payment_date, amount, method, account) VALUES (?, ?, ?, ?, ?, ?)";
             $stmt_insert_pay = $this->conn->prepare($insertPaymentQuery);
             $paymentDate = $paymentData['date'] ?? date('Y-m-d H:i:s');
-            $stmt_insert_pay->bind_param("sisds", $payment_id, $invoiceId, $paymentDate, $paymentData['amount'], $paymentData['method']);
+            $account = $paymentData['account'] ?? null;
+            $stmt_insert_pay->bind_param("sisdss", $payment_id, $invoiceId, $paymentDate, $paymentData['amount'], $paymentData['method'], $account);
             $stmt_insert_pay->execute();
             $stmt_insert_pay->close();
 

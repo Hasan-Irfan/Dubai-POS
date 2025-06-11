@@ -15,11 +15,9 @@ define('MAIL_PASSWORD', 'hckg jgqi wjcx phgp');
 define('MAIL_SMTP_SECURE', 'tls');             
 define('MAIL_PORT', 587);                      
 
-
 define('MAIL_FROM_ADDRESS', 'rihankhan441@gmail.com');
 define('MAIL_FROM_NAME', 'Dubai POS');
 
-// The base URL of your frontend application for generating reset links
 define('FRONTEND_URL', 'http://localhost:5173'); 
 
 ?>

@@ -19,6 +19,14 @@ class CashRegister {
         $this->conn->begin_transaction();
         try {
             $entry_date = $data['date'] ?? date('Y-m-d H:i:s');
+            if ($data['type'] === 'Opening') {
+                // Check if an 'Opening' entry already exists
+                $opening_check_query = "SELECT id FROM " . $this->table_name . " WHERE type = 'Opening' AND status = 'active' LIMIT 1";
+                $opening_check_result = $this->conn->query($opening_check_query);
+                if ($opening_check_result->num_rows > 0) {
+                    throw new Exception('An opening balance entry already exists. Only one opening balance is allowed.');
+                }
+            }
 
             // 1. Get the last entry BEFORE the new entry's date to determine the previous balance.
             $last_entry_query = "SELECT balance FROM " . $this->table_name . " WHERE entry_date < ? AND status = 'active' ORDER BY entry_date DESC, id DESC LIMIT 1";
@@ -291,7 +299,9 @@ public function deleteEntry($id) {
         $update_balance_query = "UPDATE " . $this->table_name . " SET balance = ? WHERE id = ?";
         $stmt_update = $this->conn->prepare($update_balance_query);
         foreach ($subsequent_entries as $entry) {
-            if ($entry['type'] === 'Inflow') {
+            if ($entry['type'] === 'Opening') {
+                $running_balance = $entry['amount'];
+            } elseif ($entry['type'] === 'Inflow') {
                 $running_balance += $entry['amount'];
             } elseif ($entry['type'] === 'Outflow') {
                 $running_balance -= $entry['amount'];

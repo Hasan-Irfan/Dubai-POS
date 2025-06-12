@@ -12,7 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit();
 // --- Dependencies ---
 require_once '../../src/Middleware/authChecker.php';
 require_once '../../config/database.php';
-require_once '../../src/Models/Report.php';
+require_once '../../src/Models/Reports.php';
 
 // --- Authorization ---
 $user_data = verify_jwt_and_get_user();

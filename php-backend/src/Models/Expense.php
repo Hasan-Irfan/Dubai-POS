@@ -1,6 +1,7 @@
 <?php
 // FILE: ...\php-backend\src\Models\Expense.php
-
+require_once __DIR__ . '/CashRegister.php';
+require_once __DIR__ . '/BankTransaction.php';
 class Expense {
     private $conn;
     private $table_name = "expenses";
@@ -12,53 +13,80 @@ class Expense {
     public function recordExpense($data, $audit_context = []) {
         $this->conn->begin_transaction();
         try {
-            // --- FIX: Opening Balance Check ---
+            // Check for opening balance before proceeding
             if ($data['payment_type'] === 'Cash') {
                 $opening_check = $this->conn->query("SELECT id FROM cash_register WHERE type = 'Opening' AND status = 'active' LIMIT 1");
                 if ($opening_check->num_rows === 0) {
                     throw new Exception('Cash opening balance is required before recording cash expenses.');
                 }
-            } else { // Bank or Shabka
+            } else { 
                 $opening_check = $this->conn->query("SELECT id FROM bank_transactions WHERE type = 'Opening' AND status = 'active' LIMIT 1");
                 if ($opening_check->num_rows === 0) {
                     throw new Exception('Bank opening balance is required before recording bank/shabka expenses.');
                 }
             }
-            // --- End of FIX ---
-
+            
+            // Prepare data for the ledger entry (cash or bank)
+            $ledger_data = [
+                'date' => $data['date'] ?? date('Y-m-d H:i:s'),
+                'type' => 'Outflow', // An expense is always an Outflow
+                'reference' => 'Expense: ' . ($data['description'] ?? 'N/A'),
+                'amount' => $data['amount'],
+                'method' => $data['payment_type'] // Pass paymentType as method for bank transactions
+            ];
+            
             $ledger_entry_id = null;
             $ledger_entry_model = null;
-            $reference = "Expense: " . ($data['description'] ?? 'N/A');
 
+            // Create the corresponding ledger entry
             if ($data['payment_type'] === 'Cash') {
                 $cash_model = new CashRegister($this->conn);
-                $ledger_entry_id = $cash_model->recordCashEntry($data); // Pass full data for date
+                $ledger_entry_id = $cash_model->recordCashEntry($ledger_data);
                 $ledger_entry_model = 'CashRegister';
             } else {
                 $bank_model = new BankTransaction($this->conn);
-                $ledger_entry_id = $bank_model->recordTransaction($data); // Pass full data for date
+                $ledger_entry_id = $bank_model->recordTransaction($ledger_data);
                 $ledger_entry_model = 'BankTransaction';
             }
 
             if (!$ledger_entry_id) {
                 throw new Exception("Failed to create ledger transaction for expense.");
             }
-
-            // --- FIX: Add Audit Info ---
+            
+            // Prepare all variables locally before binding
+            $entry_date = $data['date'] ?? date('Y-m-d H:i:s');
+            $category = $data['category'];
+            $description = $data['description'];
+            $amount = $data['amount'];
+            $payment_type = $data['payment_type'];
+            $paid_to_id = $data['paid_to_id'] ?? null;
+            $paid_to_model = $data['paid_to_model'] ?? null;
             $actor_id = $audit_context['actor_id'] ?? null;
             $actor_model = $audit_context['actor_model'] ?? null;
-            // --- End of FIX ---
-
+            
             $query = "INSERT INTO " . $this->table_name . " 
                         (entry_date, category, description, amount, payment_type, paid_to_id, paid_to_model, ledger_entry_id, ledger_entry_model, actor_id, actor_model) 
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            
             $stmt = $this->conn->prepare($query);
-            $entry_date = $data['date'] ?? date('Y-m-d H:i:s');
-            $stmt->bind_param("ssdsisiisii", 
-                $entry_date, $data['category'], $data['description'], $data['amount'],
-                $data['payment_type'], $data['paid_to_id'], $data['paid_to_model'],
-                $ledger_entry_id, $ledger_entry_model, $actor_id, $actor_model
+            
+            // *** THE FIX ***
+            // This type string correctly matches the data types of all 11 variables.
+            // s = string, d = double, i = integer
+            $stmt->bind_param("sssdsisisis", 
+                $entry_date,        // s
+                $category,          // s
+                $description,       // s
+                $amount,            // d
+                $payment_type,      // s
+                $paid_to_id,        // i
+                $paid_to_model,     // s
+                $ledger_entry_id,   // i
+                $ledger_entry_model,// s
+                $actor_id,          // i
+                $actor_model        // s
             );
+
             $stmt->execute();
             $new_id = $stmt->insert_id;
             $stmt->close();
@@ -74,6 +102,7 @@ class Expense {
             throw $e;
         }
     }
+
 
     public function findExpenseById($id) {
         $query = "SELECT * FROM " . $this->table_name . " WHERE id = ? LIMIT 1";

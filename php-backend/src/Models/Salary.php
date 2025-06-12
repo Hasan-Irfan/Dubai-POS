@@ -44,7 +44,8 @@ class Salary {
             $stmt = $this->conn->prepare($query);
             $date = $data['date'] ?? date('Y-m-d H:i:s');
             $method = $is_direct_payment ? $data['payment_method'] : null;
-            $stmt->bind_param("issdsis", $data['employee_id'], $date, $data['type'], $data['amount'], $data['description'], $method, $expense_id);
+            // $stmt->bind_param("issdsis", $data['employee_id'], $date, $data['type'], $data['amount'], $data['description'], $method, $expense_id);
+            $stmt->bind_param("isssdii", $data['employee_id'], $date, $data['type'], $data['amount'], $data['description'], $method, $expense_id);
             $stmt->execute();
             $new_payment_id = $stmt->insert_id;
             $stmt->close();

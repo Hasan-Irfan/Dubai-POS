@@ -12,6 +12,14 @@ class BankTransaction {
     public function recordTransaction($data) {
         $this->conn->begin_transaction();
         try {
+            if ($data['type'] === 'Opening') {
+                // Check if an 'Opening' entry already exists
+                $opening_check_query = "SELECT id FROM " . $this->table_name . " WHERE type = 'Opening' AND status = 'active' LIMIT 1";
+                $opening_check_result = $this->conn->query($opening_check_query);
+                if ($opening_check_result->num_rows > 0) {
+                    throw new Exception('An opening balance entry already exists. Only one opening balance is allowed.');
+                }
+            }
             $last_entry_query = "SELECT balance FROM " . $this->table_name . " WHERE status = 'active' ORDER BY entry_date DESC, id DESC LIMIT 1";
             $last_entry_stmt = $this->conn->prepare($last_entry_query);
             $last_entry_stmt->execute();

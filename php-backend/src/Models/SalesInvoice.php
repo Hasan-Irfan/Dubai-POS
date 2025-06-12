@@ -1,6 +1,9 @@
 <?php
 // FILE: ...\php-backend\src\Models\SalesInvoice.php
 
+require_once __DIR__ . '/CashRegister.php';
+require_once __DIR__ . '/BankTransaction.php';
+
 class SalesInvoice {
     private $conn;
 
@@ -103,51 +106,55 @@ class SalesInvoice {
     }
 
     /**
- * Fetches a paginated and filtered list of sales invoices.
- * @param array $options Contains filters, sorting, and pagination data.
- * @return array An array containing the list of invoices and the total count.
- */
+     * Fetches a paginated and filtered list of sales invoices.
+     * @param array $options Contains filters, sorting, and pagination data.
+     * @return array An array containing the list of invoices and the total count.
+     */
     public function getAllInvoices($options) {
-        $base_query = " FROM sales_invoices si WHERE 1=1";
+        // Corrected Method
         $params = [];
         $types = "";
 
-        // --- Build WHERE clause dynamically ---
+        // Start with the base query including the JOIN
+        $base_query = " FROM sales_invoices si LEFT JOIN employees e ON si.salesman_id = e.id";
+
+        // Build WHERE clause dynamically
+        $where_clause = " WHERE 1=1";
         if (isset($options['filters']['status'])) {
-            $base_query .= " AND si.status = ?";
+            $where_clause .= " AND si.status = ?";
             $params[] = $options['filters']['status'];
             $types .= "s";
         } else {
-            $base_query .= " AND si.status != 'deleted'";
+            $where_clause .= " AND si.status != 'deleted'";
         }
 
         if (isset($options['filters']['salesmanId'])) {
-            $base_query .= " AND si.salesman_id = ?";
+            $where_clause .= " AND si.salesman_id = ?";
             $params[] = $options['filters']['salesmanId'];
             $types .= "i";
         }
 
         if (isset($options['filters']['customerName'])) {
-            $base_query .= " AND si.customer_name LIKE ?";
+            $where_clause .= " AND si.customer_name LIKE ?";
             $customerName = "%" . $options['filters']['customerName'] . "%";
             $params[] = $customerName;
             $types .= "s";
         }
 
         if (isset($options['from'])) {
-            $base_query .= " AND si.invoice_date >= ?";
+            $where_clause .= " AND si.invoice_date >= ?";
             $params[] = $options['from'];
             $types .= "s";
         }
 
         if (isset($options['to'])) {
-            $base_query .= " AND si.invoice_date <= ?";
+            $where_clause .= " AND si.invoice_date <= ?";
             $params[] = $options['to'];
             $types .= "s";
         }
 
         // --- First Query: Get total count for pagination ---
-        $count_query = "SELECT count(si.id)" . $base_query;
+        $count_query = "SELECT count(si.id)" . $base_query . $where_clause;
         $stmt_count = $this->conn->prepare($count_query);
         if (!empty($params)) {
             $stmt_count->bind_param($types, ...$params);
@@ -158,10 +165,13 @@ class SalesInvoice {
         $stmt_count->close();
 
         // --- Second Query: Get the paginated list of main invoice data ---
-        $sort_order = $options['sort'] === 'asc' ? 'ASC' : 'DESC';
+        $sort_order = ($options['sort'] ?? 'desc') === 'asc' ? 'ASC' : 'DESC';
         $sort_by = 'si.created_at'; // Default sort
 
-        $data_query = "SELECT si.*, e.name as salesman_name" . $base_query . " LEFT JOIN employees e ON si.salesman_id = e.id ORDER BY " . $sort_by . " " . $sort_order . " LIMIT ? OFFSET ?";
+        // Combine all parts for the final data query
+        $data_query = "SELECT si.*, e.name as salesman_name" . $base_query . $where_clause . " ORDER BY " . $sort_by . " " . $sort_order . " LIMIT ? OFFSET ?";
+        
+        // Add limit and offset to parameters
         $params[] = $options['limit'];
         $params[] = $options['offset'];
         $types .= "ii";
@@ -180,15 +190,13 @@ class SalesInvoice {
         $invoice_ids = array_column($invoices_result, 'id');
         $placeholders = implode(',', array_fill(0, count($invoice_ids), '?'));
 
-        // Fetch all items for the retrieved invoices in one query
         $items_query = "SELECT * FROM invoice_items WHERE invoice_id IN ($placeholders)";
         $stmt_items = $this->conn->prepare($items_query);
         $stmt_items->bind_param(str_repeat('i', count($invoice_ids)), ...$invoice_ids);
         $stmt_items->execute();
         $items_result = $stmt_items->get_result()->fetch_all(MYSQLI_ASSOC);
         $stmt_items->close();
-
-        // Fetch all payments for the retrieved invoices in one query
+        
         $payments_query = "SELECT * FROM invoice_payments WHERE invoice_id IN ($placeholders)";
         $stmt_payments = $this->conn->prepare($payments_query);
         $stmt_payments->bind_param(str_repeat('i', count($invoice_ids)), ...$invoice_ids);

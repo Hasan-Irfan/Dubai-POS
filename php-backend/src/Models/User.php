@@ -180,7 +180,7 @@ class User {
      * @return bool True on success, false on failure.
      */
      public function createUser($username, $email, $password, $role = 'admin') {
-        // ... (hashing logic remains the same) ...
+        $hashed_password = password_hash($password, PASSWORD_DEFAULT);
 
         $query = "INSERT INTO " . $this->table_name . " (username, email, password, role) VALUES (?, ?, ?, ?)";
         

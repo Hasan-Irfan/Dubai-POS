@@ -361,7 +361,19 @@ class SalesInvoice {
  */
     public function addPayment($invoiceId, $paymentData) {
         $this->conn->begin_transaction();
+        // check for opening balance before processing payment
         try {
+            if ($paymentData['method'] === 'Cash') {
+                $opening_check = $this->conn->query("SELECT id FROM cash_register WHERE type = 'Opening' AND status = 'active' LIMIT 1");
+                if ($opening_check->num_rows === 0) {
+                    throw new Exception('Cannot process cash payment: Cash opening balance has not been set.');
+                }
+            } else { // Bank or Shabka
+                $opening_check = $this->conn->query("SELECT id FROM bank_transactions WHERE type = 'Opening' AND status = 'active' LIMIT 1");
+                if ($opening_check->num_rows === 0) {
+                    throw new Exception('Cannot process bank/shabka payment: Bank opening balance has not been set.');
+                }
+            }
             // 1. Get the current invoice and lock it for the transaction
             $invoiceQuery = "SELECT * FROM sales_invoices WHERE id = ? FOR UPDATE";
             $stmt = $this->conn->prepare($invoiceQuery);
@@ -396,7 +408,7 @@ class SalesInvoice {
             }
 
             // 3. Insert the new payment record
-            $payment_id = uniqid('pay_'); // Generate a unique ID for the payment
+            $payment_id = uniqid('pay_'); 
             
             $insertPaymentQuery = "INSERT INTO invoice_payments (id, invoice_id, payment_date, amount, method, account) VALUES (?, ?, ?, ?, ?, ?)";
             $stmt_insert_pay = $this->conn->prepare($insertPaymentQuery);

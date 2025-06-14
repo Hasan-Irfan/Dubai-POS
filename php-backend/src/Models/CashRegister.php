@@ -19,35 +19,39 @@ class CashRegister {
         $this->conn->begin_transaction();
         try {
             $entry_date = $data['date'] ?? date('Y-m-d H:i:s');
-            if ($data['type'] === 'Opening') {
-                // Check if an 'Opening' entry already exists
+            
+            // --- FIX: Opening Balance Check ---
+            if ($data['type'] !== 'Opening') {
+                $opening_check_query = "SELECT id FROM " . $this->table_name . " WHERE type = 'Opening' AND status = 'active' LIMIT 1";
+                $opening_check_result = $this->conn->query($opening_check_query);
+                if ($opening_check_result->num_rows === 0) {
+                    throw new Exception('An opening balance must be created before any other cash transactions.');
+                }
+            } else { // It IS an 'Opening' type, so check for duplicates
                 $opening_check_query = "SELECT id FROM " . $this->table_name . " WHERE type = 'Opening' AND status = 'active' LIMIT 1";
                 $opening_check_result = $this->conn->query($opening_check_query);
                 if ($opening_check_result->num_rows > 0) {
-                    throw new Exception('An opening balance entry already exists. Only one opening balance is allowed.');
+                    throw new Exception('An opening balance entry already exists. Only one is allowed.');
                 }
             }
 
-            // 1. Get the last entry BEFORE the new entry's date to determine the previous balance.
-            $last_entry_query = "SELECT balance FROM " . $this->table_name . " WHERE entry_date < ? AND status = 'active' ORDER BY entry_date DESC, id DESC LIMIT 1";
-            $last_entry_stmt = $this->conn->prepare($last_entry_query);
-            $last_entry_stmt->bind_param("s", $entry_date);
-            $last_entry_stmt->execute();
-            $result = $last_entry_stmt->get_result();
+            $last_entry_query = "SELECT balance FROM " . $this->table_name . " WHERE (entry_date < ? OR (entry_date = ? AND id < 0)) AND status = 'active' ORDER BY entry_date DESC, id DESC LIMIT 1";
+            $stmt_prev = $this->conn->prepare($last_entry_query);
+            $stmt_prev->bind_param("ss", $entry_date, $entry_date);
+            $stmt_prev->execute();
+            $result = $stmt_prev->get_result();
             $last_balance = ($result->num_rows > 0) ? $result->fetch_assoc()['balance'] : 0;
-            $last_entry_stmt->close();
+            $stmt_prev->close();
 
-            // 2. Calculate the new balance for this specific entry.
             $new_balance = $last_balance;
             if ($data['type'] === 'Inflow') {
                 $new_balance += $data['amount'];
             } elseif ($data['type'] === 'Outflow') {
                 $new_balance -= $data['amount'];
-            } else { // 'Opening'
+            } else { // Opening
                 $new_balance = $data['amount'];
             }
 
-            // 3. Insert the new cash entry.
             $insert_query = "INSERT INTO " . $this->table_name . " (entry_date, type, reference, amount, balance) VALUES (?, ?, ?, ?, ?)";
             $stmt = $this->conn->prepare($insert_query);
             $stmt->bind_param("sssdd", $entry_date, $data['type'], $data['reference'], $data['amount'], $new_balance);
@@ -59,7 +63,7 @@ class CashRegister {
                 throw new Exception("Failed to create cash entry.");
             }
 
-            // 4. ***FIX***: Recalculate all balances from the new entry's date forward.
+            // Recalculate all subsequent balances to fix potential inconsistencies
             $this->recalculateBalancesFromDate($entry_date);
 
             $this->conn->commit();

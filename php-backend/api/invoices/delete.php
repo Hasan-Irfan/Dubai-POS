@@ -14,7 +14,9 @@ require_once '../../src/Utils/formatters.php';
 
 
 $user_data = verify_jwt_and_get_user();
-if ($user_data['role'] !== 'admin' && $user_data['role'] !== 'superAdmin') {
+
+// Add this authorization block
+if (!in_array($user_data['role'], ['salesman', 'admin', 'superAdmin'])) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => 'Forbidden']);
     exit();
@@ -48,9 +50,10 @@ try {
         $formatted_invoice = format_invoice_response(
             $invoice_to_delete['invoice'], 
             $invoice_to_delete['items'],
-            [] // Payments are now deleted, so pass an empty array
+            [] 
         );
-        $formatted_invoice['status'] = 'deleted'; // Manually update status in the response
+        $formatted_invoice['status'] = 'deleted'; 
+        $formatted_invoice['deletedAt'] = date('Y-m-d H:i:s');
 
         http_response_code(200);
         echo json_encode([

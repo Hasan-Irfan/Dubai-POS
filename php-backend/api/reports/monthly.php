@@ -16,8 +16,8 @@ require_once '../../src/Models/Reports.php';
 
 // --- Authorization ---
 $user_data = verify_jwt_and_get_user();
-if ($user_data['role'] !== 'admin' && $user_data['role'] !== 'superAdmin') {
-    http_response_code(403);
+if (!in_array($user_data['role'], ['salesman', 'admin', 'superAdmin'])) {
+        http_response_code(403);
     echo json_encode(['success' => false, 'message' => 'Forbidden']);
     exit();
 }

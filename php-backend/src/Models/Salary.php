@@ -20,15 +20,24 @@ class Salary {
     public function addSalaryPayment($data) {
         $this->conn->begin_transaction();
         try {
-            // 1. Create an expense entry if it's a direct payment
-            $expense_id = null;
+            $employee_model = new Employee($this->conn);
+            $employee = $employee_model->findEmployeeById($data['employee_id']);
+            if (!$employee) {
+                throw new Exception("Employee not found or is inactive.");
+            }
+
+            // Determine if this is a direct payment that creates an expense
             $is_direct_payment = in_array($data['type'], ['Salary Payment', 'Advance Salary']);
+            $expense_id = null;
 
             if ($is_direct_payment) {
+                if (empty($data['payment_method'])) {
+                    throw new Exception('Payment method is required for this type of transaction.');
+                }
                 $expense_model = new Expense($this->conn);
                 $expense_category = ($data['type'] === 'Salary Payment') ? 'Salaries' : 'Advances';
                 $expense_id = $expense_model->recordExpense([
-                    'date' => $data['date'],
+                    'date' => $data['date'] ?? date('Y-m-d H:i:s'),
                     'category' => $expense_category,
                     'description' => $data['description'],
                     'amount' => $data['amount'],
@@ -36,32 +45,59 @@ class Salary {
                     'paid_to_id' => $data['employee_id'],
                     'paid_to_model' => 'Employee',
                 ]);
-                if (!$expense_id) throw new Exception("Failed to record expense for salary payment.");
             }
 
-            // 2. Insert the salary payment record
+            // Insert the salary payment record
             $query = "INSERT INTO " . $this->table_name . " (employee_id, entry_date, type, amount, description, payment_method, expense_id) VALUES (?, ?, ?, ?, ?, ?, ?)";
             $stmt = $this->conn->prepare($query);
             $date = $data['date'] ?? date('Y-m-d H:i:s');
             $method = $is_direct_payment ? $data['payment_method'] : null;
-            // $stmt->bind_param("issdsis", $data['employee_id'], $date, $data['type'], $data['amount'], $data['description'], $method, $expense_id);
-            $stmt->bind_param("isssdii", $data['employee_id'], $date, $data['type'], $data['amount'], $data['description'], $method, $expense_id);
+
+            // *** THE FINAL CORRECTED BIND_PARAM LINE ***
+            // 7 characters for 7 variables
+            $stmt->bind_param("isssdii", 
+                $data['employee_id'],   // i - integer
+                $date,                  // s - string
+                $data['type'],          // s - string
+                $data['amount'],        // s - string (safer for decimals)
+                $data['description'],   // d - double
+                $method,                // i - integer
+                $expense_id             // i - integer
+            );
+            
             $stmt->execute();
             $new_payment_id = $stmt->insert_id;
             $stmt->close();
-            if (!$new_payment_id) throw new Exception("Failed to create salary payment record.");
 
-            // 3. Update the employee's salary balance
-            $employee_model = new Employee($this->conn);
-            // In Mongoose, a negative amount was used for payments. Here we pass a positive amount and subtract.
-            // A positive amount in the payload means it's a payment TO the employee (reduces what we owe).
-            // A negative amount would be a deduction (increases what we owe).
-            $balance_change = -($data['amount']);
-            $employee_model->updateSalaryBalance($data['employee_id'], $balance_change);
+            if (!$new_payment_id) {
+                throw new Exception("Failed to create salary payment record.");
+            }
+            
+            // Update Employee Salary Balance OR Net Salary based on type
+            $db_update_data = [];
+            if ($data['type'] === 'Salary Payment') {
+                $db_update_data['salary_balance'] = $employee['salary_balance'] - $data['amount'];
+            } else {
+                $current_net = (float)$employee['salary_net'];
+                switch ($data['type']) {
+                    case 'Extra Commission':
+                    case 'Recovery Award':
+                        $current_net += $data['amount'];
+                        break;
+                    case 'Advance Salary':
+                    case 'Deduction':
+                        $current_net -= $data['amount'];
+                        break;
+                }
+                $db_update_data['salary_net'] = $current_net;
+            }
+            
+            if (!empty($db_update_data)) {
+                $employee_model->updateEmployee($data['employee_id'], $db_update_data);
+            }
 
             $this->conn->commit();
             return $new_payment_id;
-
         } catch (Exception $e) {
             $this->conn->rollback();
             throw $e;

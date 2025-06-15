@@ -15,6 +15,12 @@ require_once '../../src/Utils/formatters.php';
 
 // --- Authorization ---
 $user_data = verify_jwt_and_get_user();
+// Add this authorization block
+if (!in_array($user_data['role'], ['salesman', 'admin', 'superAdmin'])) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'message' => 'Forbidden']);
+    exit();
+}
 
 // --- Logic ---
 $data = json_decode(file_get_contents("php://input"), true);

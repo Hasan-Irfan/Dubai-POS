@@ -49,7 +49,8 @@ try {
         exit();
     }
 
-    $role = ($email === ADMIN_EMAIL) ? 'superAdmin' : 'admin';
+    // Corrected Code
+    $role = ($email === ADMIN_EMAIL) ? 'superAdmin' : 'salesman';
     $new_user_id = $user->createUser($username, $email, $password, $role);
     if ($new_user_id) {
         http_response_code(201);

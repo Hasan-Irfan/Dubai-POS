@@ -139,20 +139,20 @@ public function updateEmployee($id, $data) {
      * @return int|false The ID of the newly created employee, or false on failure.
      */
     public function createEmployee($data) {
-        // This logic mimics the Mongoose pre-save hook 
-        // If net salary isn't provided, it defaults to the gross salary.
         if (!isset($data['salary_net'])) {
             $data['salary_net'] = $data['salary_gross'];
         }
 
+        // --- FIX: Initialize salary_balance along with salary ---
         $query = "INSERT INTO " . $this->table_name . " 
-                    (name, phone, email, address, role, hire_date, salary_gross, salary_net) 
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                    (name, phone, email, address, role, hire_date, salary_gross, salary_net, salary_balance) 
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
         
         $stmt = $this->conn->prepare($query);
 
-        // Bind parameters to the prepared statement
-        $stmt->bind_param("ssssssdd", 
+        $initial_salary = $data['salary_gross']; // Balance starts at the gross amount
+
+        $stmt->bind_param("ssssssddd", 
             $data['name'],
             $data['phone'],
             $data['email'],
@@ -160,11 +160,12 @@ public function updateEmployee($id, $data) {
             $data['role'],
             $data['hire_date'],
             $data['salary_gross'],
-            $data['salary_net']
+            $data['salary_net'],
+            $initial_salary // Set the starting balance
         );
-        
+
         if ($stmt->execute()) {
-            return $stmt->insert_id; // Return the new employee's ID
+            return $stmt->insert_id;
         }
         
         return false;

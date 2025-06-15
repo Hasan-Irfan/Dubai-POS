@@ -26,7 +26,23 @@ class Salary {
                 throw new Exception("Employee not found or is inactive.");
             }
 
-            // Determine if this is a direct payment that creates an expense
+            // --- Simplified Balance Calculation ---
+            $current_balance = (float)$employee['salary_balance'];
+            $new_balance = $current_balance;
+
+            switch ($data['type']) {
+                case 'Extra Commission':
+                case 'Recovery Award':
+                    $new_balance += $data['amount'];
+                    break;
+                case 'Salary Payment':
+                case 'Advance Salary':
+                case 'Deduction':
+                    $new_balance -= $data['amount'];
+                    break;
+            }
+            
+            // --- Direct Payment & Expense Logic (Unchanged) ---
             $is_direct_payment = in_array($data['type'], ['Salary Payment', 'Advance Salary']);
             $expense_id = null;
 
@@ -47,24 +63,12 @@ class Salary {
                 ]);
             }
 
-            // Insert the salary payment record
+            // --- Insert the salary payment record ---
             $query = "INSERT INTO " . $this->table_name . " (employee_id, entry_date, type, amount, description, payment_method, expense_id) VALUES (?, ?, ?, ?, ?, ?, ?)";
             $stmt = $this->conn->prepare($query);
             $date = $data['date'] ?? date('Y-m-d H:i:s');
             $method = $is_direct_payment ? $data['payment_method'] : null;
-
-            // *** THE FINAL CORRECTED BIND_PARAM LINE ***
-            // 7 characters for 7 variables
-            $stmt->bind_param("isssdii", 
-                $data['employee_id'],   // i - integer
-                $date,                  // s - string
-                $data['type'],          // s - string
-                $data['amount'],        // s - string (safer for decimals)
-                $data['description'],   // d - double
-                $method,                // i - integer
-                $expense_id             // i - integer
-            );
-            
+            $stmt->bind_param("isssdii", $data['employee_id'], $date, $data['type'], $data['amount'], $data['description'], $method, $expense_id);
             $stmt->execute();
             $new_payment_id = $stmt->insert_id;
             $stmt->close();
@@ -73,31 +77,16 @@ class Salary {
                 throw new Exception("Failed to create salary payment record.");
             }
             
-            // Update Employee Salary Balance OR Net Salary based on type
-            $db_update_data = [];
-            if ($data['type'] === 'Salary Payment') {
-                $db_update_data['salary_balance'] = $employee['salary_balance'] - $data['amount'];
-            } else {
-                $current_net = (float)$employee['salary_net'];
-                switch ($data['type']) {
-                    case 'Extra Commission':
-                    case 'Recovery Award':
-                        $current_net += $data['amount'];
-                        break;
-                    case 'Advance Salary':
-                    case 'Deduction':
-                        $current_net -= $data['amount'];
-                        break;
-                }
-                $db_update_data['salary_net'] = $current_net;
-            }
-            
-            if (!empty($db_update_data)) {
-                $employee_model->updateEmployee($data['employee_id'], $db_update_data);
-            }
+            // --- Update Employee Record: Sync net salary and balance ---
+            $db_update_data = [
+                'salary_net' => $new_balance,
+                'salary_balance' => $new_balance
+            ];
+            $employee_model->updateEmployee($data['employee_id'], $db_update_data);
 
             $this->conn->commit();
             return $new_payment_id;
+
         } catch (Exception $e) {
             $this->conn->rollback();
             throw $e;
